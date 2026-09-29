@@ -1,0 +1,125 @@
+{
+  "note": "합성 이미지와 가짜 EXIF — scripts/make-samples.mjs 가 만든 기대값",
+  "samples": [
+    {
+      "file": "kansai_01_airport.jpg",
+      "label": "간사이 공항 도착",
+      "byteOrder": "II",
+      "takenAt": "2026-04-03T11:20:05",
+      "offset": "+09:00",
+      "lat": 34.4347,
+      "lng": 135.244,
+      "intendedLat": 34.4347,
+      "intendedLng": 135.244,
+      "bytes": 10460
+    },
+    {
+      "file": "kansai_02_dotonbori.jpg",
+      "label": "도톤보리 저녁",
+      "byteOrder": "MM",
+      "takenAt": "2026-04-03T18:42:10",
+      "offset": "+09:00",
+      "lat": 34.6687,
+      "lng": 135.5013,
+      "intendedLat": 34.6687,
+      "intendedLng": 135.5013,
+      "bytes": 12297
+    },
+    {
+      "file": "kansai_03_castle.jpg",
+      "label": "오사카성 공원",
+      "byteOrder": "II",
+      "takenAt": "2026-04-04T09:31:00",
+      "offset": "",
+      "lat": 34.6873,
+      "lng": 135.5262,
+      "intendedLat": 34.6873,
+      "intendedLng": 135.5262,
+      "bytes": 9465
+    },
+    {
+      "file": "kansai_04_umeda.jpg",
+      "label": "우메다 전망대",
+      "byteOrder": "MM",
+      "takenAt": "2026-04-04T17:55:30",
+      "offset": "+09:00",
+      "lat": 34.7053,
+      "lng": 135.4906,
+      "intendedLat": 34.7053,
+      "intendedLng": 135.4906,
+      "bytes": 10622
+    },
+    {
+      "file": "kansai_05_inari.jpg",
+      "label": "후시미 이나리 입구",
+      "byteOrder": "II",
+      "takenAt": "2026-04-05T08:50:12",
+      "offset": "+09:00",
+      "lat": 34.9671,
+      "lng": 135.7727,
+      "intendedLat": 34.9671,
+      "intendedLng": 135.7727,
+      "bytes": 13216
+    },
+    {
+      "file": "kansai_06_kiyomizu.jpg",
+      "label": "기요미즈데라",
+      "byteOrder": "II",
+      "takenAt": "2026-04-05T13:10:44",
+      "offset": "+09:00",
+      "lat": 34.9949,
+      "lng": 135.785,
+      "intendedLat": 34.9949,
+      "intendedLng": 135.785,
+      "bytes": 11034
+    },
+    {
+      "file": "kansai_07_gion.jpg",
+      "label": "기온 거리",
+      "byteOrder": "MM",
+      "takenAt": "2026-04-05T16:30:00",
+      "offset": "",
+      "lat": 35.0037,
+      "lng": 135.7788,
+      "intendedLat": 35.0037,
+      "intendedLng": 135.7788,
+      "bytes": 11730
+    },
+    {
+      "file": "kansai_08_nara.jpg",
+      "label": "나라 공원 사슴",
+      "byteOrder": "II",
+      "takenAt": "2026-04-06T10:02:18",
+      "offset": "+09:00",
+      "lat": 34.6851,
+      "lng": 135.843,
+      "intendedLat": 34.6851,
+      "intendedLng": 135.843,
+      "bytes": 11358
+    },
+    {
+      "file": "kansai_09_nogps.jpg",
+      "label": "공항 가는 열차(위치 없음)",
+      "byteOrder": "MM",
+      "takenAt": "2026-04-06T14:05:00",
+      "offset": "",
+      "lat": null,
+      "lng": null,
+      "intendedLat": null,
+      "intendedLng": null,
+      "bytes": 12378
+    },
+    {
+      "file": "kansai_10_noexif.jpg",
+      "label": "메신저로 받은 사진(EXIF 없음)",
+      "byteOrder": null,
+      "takenAt": "",
+      "offset": "",
+      "lat": null,
+      "lng": null,
+      "intendedLat": null,
+      "intendedLng": null,
+      "bytes": 10682
+    }
+  ]
+}

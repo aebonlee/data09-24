@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JOURNAL · 여행 기록일지</title>
+  <meta name="description" content="사진의 날짜·위치(EXIF)로 여행을 날짜별로 정리하고, 동선 지도·방문 국가·경비·일기 도우미·요약 카드까지 한곳에 담는 여행 기록일지(1단계). 사진은 이 브라우저 밖으로 나가지 않습니다.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#1f5f6b">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <header class="site-header">
+    <div class="inner header-inner">
+      <div class="brand">
+        <span class="brand-name">JOURNAL</span>
+        <span class="brand-sub">사진으로 정리하는 여행 기록일지</span>
+      </div>
+      <div class="trip-bar">
+        <label class="sr" for="tripSel">여행 고르기</label>
+        <select id="tripSel" aria-label="여행 고르기"></select>
+        <button type="button" class="btn small" id="btnNewTrip">새 여행</button>
+        <button type="button" class="btn small ghost" id="btnSample">예시 여행 불러오기</button>
+        <span id="saveState" class="save-state" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <nav class="inner tabs" role="tablist" aria-label="화면">
+      <button type="button" role="tab" data-tab="trip" aria-selected="true">여행</button>
+      <button type="button" role="tab" data-tab="log">기록·사진</button>
+      <button type="button" role="tab" data-tab="map">동선 지도</button>
+      <button type="button" role="tab" data-tab="money">경비</button>
+      <button type="button" role="tab" data-tab="export">요약·내보내기</button>
+    </nav>
+  </header>
+
+  <main id="main" class="inner main" tabindex="-1">
+
+    <!-- 처음 화면 -->
+    <section id="empty" class="panel empty" hidden>
+      <h1>여행을 하나 만들어 보세요</h1>
+      <p>사진을 올리면 찍은 날짜와 위치(EXIF)를 읽어 날짜별로 묶고, 지도에 동선을 그려 드려요. 사진은 이 브라우저 밖으로 나가지 않습니다.</p>
+      <div class="actions">
+        <button type="button" class="btn primary" id="btnNewTrip2">새 여행 만들기</button>
+        <button type="button" class="btn" id="btnSample2">예시 여행 불러오기</button>
+      </div>
+    </section>
+
+    <!-- 1. 여행 -->
+    <section id="tab-trip" class="tab" role="tabpanel" aria-labelledby="hTrip">
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hTrip">여행 정보</h2>
+            <form id="tripForm" novalidate>
+              <label>여행 이름<input id="tTitle" type="text" maxlength="60" placeholder="예: 간사이 3박 4일"><span class="err" id="tTitleErr"></span></label>
+              <div class="grid2">
+                <label>첫날<input id="tStart" type="date"></label>
+                <label>마지막 날<input id="tEnd" type="date"><span class="err" id="tEndErr"></span></label>
+              </div>
+              <p class="hint" id="tPeriod"></p>
+              <div class="field">
+                <span class="field-label" id="lblCountry">나라</span>
+                <div class="inline">
+                  <select id="tCountryAdd" aria-labelledby="lblCountry"></select>
+                  <button type="button" class="btn small" id="btnCountryAdd">더하기</button>
+                </div>
+                <div class="chips" id="tCountries"></div>
+                <p class="hint">위치가 있는 사진을 올리면 그 나라가 자동으로 더해져요.</p>
+              </div>
+              <div class="field">
+                <label for="tCityAdd" class="field-label">도시</label>
+                <div class="inline">
+                  <input id="tCityAdd" type="text" maxlength="40" placeholder="예: 오사카 (쉼표로 여러 개)">
+                  <button type="button" class="btn small" id="btnCityAdd">더하기</button>
+                </div>
+                <div class="chips" id="tCities"></div>
+              </div>
+              <label>메모<textarea id="tMemo" rows="2" maxlength="500" placeholder="함께 간 사람, 여행 목적 등"></textarea></label>
+            </form>
+            <div class="actions">
+              <button type="button" class="btn ghost" id="btnDelTrip">이 여행 지우기</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>이 여행 한눈에</h2>
+            <div class="stats" id="tripStats"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>방문한 나라와 도시 <span class="tag">모든 여행</span></h2>
+            <div class="map-box" id="worldMap"></div>
+            <p class="legend"><span class="sw visited"></span>방문한 나라 <span class="sw dot"></span>사진 위치</p>
+            <div id="visitedSummary"></div>
+          </div>
+          <div class="panel">
+            <h2>내 여행 목록</h2>
+            <div id="tripList" class="trip-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 기록·사진 -->
+    <section id="tab-log" class="tab" role="tabpanel" aria-labelledby="hLog" hidden>
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hLog">사진 불러오기</h2>
+            <p class="hint">JPEG 사진을 여러 장 골라 주세요. 찍은 날짜와 위치(EXIF)를 읽어 날짜별로 묶어요. <strong>사진 원본은 올리거나 복사하지 않고</strong>, 작은 미리보기만 이 브라우저에 저장합니다.</p>
+            <label class="file-btn btn primary">사진 고르기<input type="file" id="photoInput" accept="image/jpeg,image/*" multiple></label>
+            <div id="importResult" class="note" hidden></div>
+            <div class="actions">
+              <button type="button" class="btn" id="btnMakeEntries">사진으로 날짜별 기록 만들기</button>
+              <button type="button" class="btn ghost" id="btnNewEntry">기록 직접 쓰기</button>
+            </div>
+            <p class="hint">아이폰 사진(HEIC)은 날짜·위치를 읽지 못해요. 사진 앱에서 「JPEG 로 내보내기」 하거나 설정 → 카메라 → 포맷 → 「높은 호환성」으로 찍은 사진을 써 주세요.</p>
+          </div>
+
+          <div class="panel" id="entryPanel" hidden>
+            <h2 id="entryTitle">기록 쓰기</h2>
+            <form id="entryForm" novalidate>
+              <div class="grid2">
+                <label>날짜<input id="eDate" type="date"><span class="err" id="eDateErr"></span></label>
+                <label>시각(선택)<input id="eTime" type="time"></label>
+              </div>
+              <label>장소<input id="ePlace" type="text" maxlength="80" placeholder="예: 오사카 · 도톤보리"></label>
+              <p class="hint" id="ePos"></p>
+              <label>키워드·메모<textarea id="eKeywords" rows="2" maxlength="600" placeholder="예: 강가 네온, 타코야키, 비 조금"></textarea></label>
+              <label>일기<textarea id="eText" rows="7" maxlength="6000" placeholder="직접 쓰거나, 아래 일기 도우미로 초안을 받아 붙여 넣어 주세요."></textarea></label>
+              <div class="actions">
+                <button type="submit" class="btn primary" id="eSave">저장</button>
+                <button type="button" class="btn" id="eCancel">닫기</button>
+                <button type="button" class="btn ghost" id="eDelete">이 기록 지우기</button>
+                <button type="button" class="btn ghost" id="eClearPos" hidden>위치 지우기</button>
+              </div>
+            </form>
+
+            <details class="helper" id="diaryHelper">
+              <summary>일기 도우미 (AI)</summary>
+              <p class="hint">키워드·메모와 이날 들른 곳·사진 시간대로 요청문을 만들어 드려요. ChatGPT·Copilot 에 붙여 넣고, 받은 답을 아래 칸에 붙여 넣어 주세요.</p>
+              <div class="grid2">
+                <label>형식<select id="dTone"><option value="blog">블로그 글</option><option value="diary">담백한 일기</option><option value="short">짧은 기록</option></select></label>
+                <label>분량<select id="dLen"><option value="s">짧게(200자)</option><option value="m" selected>보통(500자)</option><option value="l">길게(900자)</option></select></label>
+              </div>
+              <div class="actions">
+                <button type="button" class="btn" id="dMake">요청문 만들고 복사</button>
+                <button type="button" class="btn" id="dAuto" hidden>내 키로 바로 쓰기</button>
+              </div>
+              <label>요청문<textarea id="dPrompt" rows="6" readonly></textarea></label>
+              <label>받은 답 붙여 넣기<textarea id="dAnswer" rows="6" placeholder="ChatGPT 의 답을 여기에 붙여 넣어 주세요."></textarea></label>
+              <div class="actions">
+                <button type="button" class="btn primary" id="dApply">일기 칸에 넣기</button>
+              </div>
+              <p class="small" id="dMsg" role="status" aria-live="polite"></p>
+            </details>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>날짜별 기록과 앨범</h2>
+            <div id="dayList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. 동선 지도 -->
+    <section id="tab-map" class="tab" role="tabpanel" aria-labelledby="hMap" hidden>
+      <div class="panel">
+        <h2 id="hMap">동선 지도</h2>
+        <div class="toolbar">
+          <label class="inline-label">보기<select id="mDay"></select></label>
+          <label class="check"><input type="checkbox" id="mThumbs" checked> 사진 썸네일</label>
+        </div>
+        <div class="map-box trip-map" id="tripMap"></div>
+        <div id="mLegend" class="legend"></div>
+        <div id="pinInfo" class="pin-info" aria-live="polite"></div>
+        <p class="hint">핀을 누르면 그곳의 사진과 기록을 보여 드려요. 선은 같은 날 사진을 찍은 순서대로 이은 직선이며, 실제 이동 경로(도로)와는 다를 수 있어요. 지도는 간략한 세계 지도(1:110m)라 해안선이 거칠게 보입니다.</p>
+      </div>
+      <div class="panel">
+        <h2>날짜별 동선</h2>
+        <div id="routeList"></div>
+      </div>
+    </section>
+
+    <!-- 4. 경비 -->
+    <section id="tab-money" class="tab" role="tabpanel" aria-labelledby="hMoney" hidden>
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hMoney">지출 적기</h2>
+            <form id="xForm" novalidate>
+              <div class="grid2">
+                <label>날짜<input id="xDate" type="date"><span class="err" id="xDateErr"></span></label>
+                <label>분류<select id="xCat"></select></label>
+              </div>
+              <div class="grid2">
+                <label>금액<input id="xAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="예: 1,500 · 12.50"><span class="err" id="xAmountErr"></span></label>
+                <label>통화<select id="xCur"></select></label>
+              </div>
+              <label>메모<input id="xMemo" type="text" maxlength="80" placeholder="예: 점심, 교통카드 충전"></label>
+              <p class="hint" id="xPreview"></p>
+              <div class="actions">
+                <button type="submit" class="btn primary" id="xSubmit">추가</button>
+                <button type="button" class="btn" id="xCancel" hidden>고치기 취소</button>
+              </div>
+            </form>
+          </div>
+          <div class="panel">
+            <h2>환율 <span class="tag">직접 입력</span></h2>
+            <p class="hint">실시간 환율을 가져오지 않아요. 환전 영수증이나 카드 명세서의 환율을 적어 주세요. 원(KRW)으로 환산해 합계를 냅니다.</p>
+            <div id="rateList"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>합계</h2>
+            <div id="xTotals"></div>
+          </div>
+          <div class="panel">
+            <h2>지출 내역</h2>
+            <div id="xList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 요약·내보내기 -->
+    <section id="tab-export" class="tab" role="tabpanel" aria-labelledby="hExport" hidden>
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hExport">요약 카드</h2>
+            <p class="hint">여행 이름·기간·나라·사진 수·이동 거리·경비와 동선을 한 장에 담아요. SNS 나 메신저로 보내기 좋게 PNG 로 내려받습니다.</p>
+            <label class="check"><input type="checkbox" id="cMoney" checked> 경비 합계 넣기</label>
+            <canvas id="cardCanvas" width="1080" height="1080" class="card-canvas" aria-label="요약 카드 미리보기"></canvas>
+            <div class="actions">
+              <button type="button" class="btn primary" id="btnCardPng">PNG 내려받기</button>
+              <button type="button" class="btn" id="btnPrint">여행기 인쇄 / PDF 저장</button>
+            </div>
+            <p class="hint">「여행기 인쇄」는 날짜별 일기·사진·지도·경비를 한 문서로 모아 인쇄 창을 엽니다. 인쇄 창에서 「PDF로 저장」을 고르면 PDF 가 됩니다.</p>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>AI 여행 리포트</h2>
+            <p class="hint">여행 전체 기록으로 「추억 요약」 요청문을 만들어요. 받은 답을 붙여 넣으면 인쇄용 여행기 맨 앞에 들어갑니다.</p>
+            <div class="actions">
+              <button type="button" class="btn" id="rMake">요청문 만들고 복사</button>
+              <button type="button" class="btn" id="rAuto" hidden>내 키로 바로 쓰기</button>
+            </div>
+            <label>요청문<textarea id="rPrompt" rows="5" readonly></textarea></label>
+            <label>여행 리포트<textarea id="rText" rows="7" maxlength="8000" placeholder="받은 답을 붙여 넣어 주세요. 직접 고쳐 써도 돼요."></textarea></label>
+            <p class="small" id="rMsg" role="status" aria-live="polite"></p>
+          </div>
+          <div class="panel">
+            <h2>백업과 설정</h2>
+            <div class="actions">
+              <button type="button" class="btn" id="btnExport">백업 내려받기(JSON)</button>
+              <label class="file-btn btn">백업 가져오기<input type="file" id="importInput" accept="application/json,.json"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="bThumbs" checked> 백업에 사진 미리보기 포함(파일이 커져요)</label>
+            <details class="helper" id="keyBox">
+              <summary>자동 모드 — 내 OpenAI 키 (선택)</summary>
+              <p class="hint">키를 넣으면 「내 키로 바로 쓰기」 단추가 생겨요. 키는 이 브라우저에만 저장되고 백업 파일에도 들어가지 않아요. 사용 요금은 키 주인에게 청구됩니다. 보내는 것은 요청문 글자뿐이고 사진은 보내지 않아요.</p>
+              <label>OpenAI API 키<input id="aiKey" type="password" autocomplete="off" placeholder="sk-..."></label>
+              <div class="actions">
+                <button type="button" class="btn" id="btnKeySave">키 저장</button>
+                <button type="button" class="btn ghost" id="btnKeyDel">키 지우기</button>
+              </div>
+              <p class="small" id="keyMsg" role="status"></p>
+            </details>
+            <div class="actions">
+              <button type="button" class="btn ghost danger" id="btnReset">모든 여행 지우기</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 인쇄용 여행기 (화면에는 보이지 않음) -->
+  <div id="printView" class="print-view" aria-hidden="true"></div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toastMsg"></span><button type="button" class="btn small" id="toastAct" hidden>되돌리기</button></div>
+
+  <footer class="site-footer inner">
+    <p>JOURNAL · data09-24 · 현장 데이터 수집·디지털화 전문가과정 1차수 수강생 프로젝트(1단계). 지도: Made with Natural Earth.</p>
+  </footer>
+
+  <script src="vendor/world-110m.js"></script>
+  <script src="js/exif.js"></script>
+  <script src="js/logic.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/sample-data.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
