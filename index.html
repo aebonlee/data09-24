@@ -28,6 +28,7 @@
     </div>
     <nav class="inner tabs" role="tablist" aria-label="화면">
       <button type="button" role="tab" data-tab="trip" aria-selected="true">여행</button>
+      <button type="button" role="tab" data-tab="plan">일정</button>
       <button type="button" role="tab" data-tab="log">기록·사진</button>
       <button type="button" role="tab" data-tab="map">동선 지도</button>
       <button type="button" role="tab" data-tab="money">경비</button>
@@ -99,6 +100,65 @@
           <div class="panel">
             <h2>내 여행 목록</h2>
             <div id="tripList" class="trip-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 1-2. 여행 일정 (2026-09-30 추가) -->
+    <section id="tab-plan" class="tab" role="tabpanel" aria-labelledby="hPlan" hidden>
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hPlan">일정 적기</h2>
+            <form id="pForm" novalidate>
+              <div class="grid2">
+                <label>종류<select id="pType"></select></label>
+                <label>일정 이름<input id="pTitle" type="text" maxlength="60" placeholder="예: 인천 → 간사이 (가는 편)"><span class="err" id="pTitleErr"></span></label>
+              </div>
+              <div class="grid2">
+                <label>날짜<input id="pDate" type="date"><span class="err" id="pDateErr"></span></label>
+                <label>시작 시각(선택)<input id="pStart" type="time"></label>
+              </div>
+              <div class="grid2">
+                <label>끝나는 날(선택)<input id="pEndDate" type="date"><span class="err" id="pEndDateErr"></span></label>
+                <label>끝나는 시각(선택)<input id="pEnd" type="time"><span class="err" id="pEndErr"></span></label>
+              </div>
+              <p class="hint">숙소처럼 여러 날 이어지면 「끝나는 날」에 체크아웃 날을, 밤 비행기로 다음 날 도착하면 도착 날을 골라 주세요.</p>
+              <label>장소<input id="pPlace" type="text" maxlength="80" placeholder="예: 오사카 · 난바"></label>
+              <div class="actions">
+                <button type="button" class="btn small" id="pCityFind">도시 목록에서 위치 찾기</button>
+                <button type="button" class="btn small ghost" id="pClearPos" hidden>위치 지우기</button>
+              </div>
+              <div id="pCityHits" class="chips"></div>
+              <label>좌표 직접 넣기(선택)<input id="pPos" type="text" inputmode="decimal" autocomplete="off" placeholder="예: 34.6655, 135.5010 (구글 지도에서 장소를 오른쪽 클릭하면 복사돼요)"><span class="err" id="pPosErr"></span></label>
+              <p class="hint" id="pPosNote"></p>
+              <div class="grid2">
+                <label>예약 번호(선택)<input id="pBooking" type="text" maxlength="60" autocomplete="off" placeholder="예: 항공권·호텔 예약 번호"></label>
+                <label>비용 연결(선택)<select id="pExpense"></select></label>
+              </div>
+              <div class="grid2" id="pNewCost" hidden>
+                <label>금액<input id="pAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="예: 38,400"><span class="err" id="pAmountErr"></span></label>
+                <label>통화<select id="pCur"></select></label>
+              </div>
+              <label>메모<textarea id="pMemo" rows="2" maxlength="300" placeholder="예: 체크인 15시, 수하물 15kg"></textarea></label>
+              <label class="check"><input type="checkbox" id="pDone"> 확인 끝(예약·준비 완료)</label>
+              <div class="actions">
+                <button type="submit" class="btn primary" id="pSubmit">추가</button>
+                <button type="button" class="btn" id="pCancel" hidden>고치기 취소</button>
+                <button type="button" class="btn ghost" id="pDelete" hidden>이 일정 지우기</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>날짜별 일정표</h2>
+              <span class="small" id="pProgress"></span>
+            </div>
+            <div id="planList"></div>
+            <p class="hint">위치가 있는 일정은 「동선 지도」에 검은 점선과 네모 핀으로, 사진으로 그린 실제 동선과 함께 보여요. 일정표는 「요약·내보내기 → 여행기 인쇄」에도 들어가요.</p>
           </div>
         </div>
       </div>
@@ -182,6 +242,7 @@
         <div class="toolbar">
           <label class="inline-label">보기<select id="mDay"></select></label>
           <label class="check"><input type="checkbox" id="mThumbs" checked> 사진 썸네일</label>
+          <label class="check"><input type="checkbox" id="mPlans" checked> 계획한 일정</label>
         </div>
         <div class="map-box trip-map" id="tripMap"></div>
         <div id="mLegend" class="legend"></div>

@@ -40,13 +40,17 @@
       '<rect class="sea" width="' + W + '" height="' + proj.H + '"/>' + countries(proj, opts.visitedIds, 'visited') + dots + '</svg>';
   }
 
-  // 여행 동선 지도. opts: { trip, routes(JLogic.tripRoutes), day('' = 전체), thumbs(bool), thumbUrl(photoId → url|''), width }
-  // 반환: { svg, stops: [{ n, date, color, stop }] } — 핀 번호 순서대로
+  // 여행 동선 지도. opts: { trip, routes(JLogic.tripRoutes), day('' = 전체), thumbs(bool), thumbUrl(photoId → url|''), width,
+  //                        plans(JLogic.planRoutes, 선택) }
+  // 반환: { svg, stops: [{ n, date, color, stop }], plans: 그린 계획 수 } — 핀 번호 순서대로
+  // 계획(여행 일정)은 실제 동선과 구별되게 검은 점선 + 흰 네모 핀(종류 첫 글자)으로 그린다. 점선은 실제 동선 아래, 네모는 맨 위.
   function trip(opts) {
     var W = opts.width || 960, t = opts.trip;
     var routes = (opts.routes || []).filter(function (r) { return !opts.day || r.date === opts.day; });
+    var planR = (opts.plans || []).filter(function (r) { return !opts.day || r.date === opts.day; });
     var pts = [];
     routes.forEach(function (r) { pts = pts.concat(r.stops); });
+    planR.forEach(function (r) { pts = pts.concat(r.stops); });
     var bbox = L.boundsOf(pts);
     if (!bbox) {
       // 위치 있는 사진이 없으면 적어 둔 나라들 범위, 그것도 없으면 세계
@@ -79,10 +83,28 @@
           '<text x="' + x.toFixed(1) + '" y="' + (y + 4.2).toFixed(1) + '" text-anchor="middle">' + (i + 1) + '</text></g>');
       });
     });
+    var planSvg = [], planPins = [], nPlans = 0;
+    var photoXY = list.map(function (s) { return [proj.x(s.stop.lng), proj.y(s.stop.lat)]; });
+    planR.forEach(function (r) {
+      if (r.stops.length > 1) planSvg.push('<polyline class="plan-route" points="' + r.stops.map(function (s) { return proj.x(s.lng).toFixed(1) + ',' + proj.y(s.lat).toFixed(1); }).join(' ') + '"/>');
+    });
+    planR.forEach(function (r) {
+      r.stops.forEach(function (s) {
+        var x0 = proj.x(s.lng), y0 = proj.y(s.lat), x = x0, y = y0, p = s.plan, lead = ''; nPlans++;
+        // 사진 핀과 같은 자리(계획대로 간 곳)면 네모를 왼쪽 아래로 비켜 그리고 짧은 선으로 잇는다 — 둘 다 보이고 눌리게
+        if (photoXY.some(function (q) { return Math.abs(q[0] - x0) < 16 && Math.abs(q[1] - y0) < 16; })) {
+          x = x0 - 20; y = y0 + 18;
+          lead = '<line class="plan-lead" x1="' + x0.toFixed(1) + '" y1="' + y0.toFixed(1) + '" x2="' + x.toFixed(1) + '" y2="' + y.toFixed(1) + '"/>';
+        }
+        planPins.push(lead + '<g class="plan-pin' + (p.done ? ' done' : '') + '" data-plan-pin="' + esc(p.id) + '" tabindex="0" role="button" aria-label="' + esc('계획 ' + (p.start || '') + ' ' + p.type + ' ' + p.title) + '">' +
+          '<rect x="' + (x - 10).toFixed(1) + '" y="' + (y - 10).toFixed(1) + '" width="20" height="20" rx="4"/>' +
+          '<text x="' + x.toFixed(1) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="middle">' + esc(String(p.type || '').charAt(0)) + '</text></g>');
+      });
+    });
     var svg = '<svg class="map-svg trip" viewBox="0 0 ' + W + ' ' + proj.H + '" role="img" aria-label="여행 동선 지도">' +
       '<rect class="sea" width="' + W + '" height="' + proj.H + '"/>' + countries(proj, t.countries, 'visited-soft') +
-      lines.join('') + thumbs.join('') + pins.join('') + scaleBar(proj, W) + '</svg>';
-    return { svg: svg, stops: list, proj: proj };
+      planSvg.join('') + lines.join('') + thumbs.join('') + pins.join('') + planPins.join('') + scaleBar(proj, W) + '</svg>';
+    return { svg: svg, stops: list, proj: proj, plans: nPlans };
   }
 
   // 축척 막대 — 보이는 폭의 약 1/5 을 1·2·5 단위 km 로

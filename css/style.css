@@ -291,3 +291,28 @@ td.neg { color: var(--neg); font-weight: 700; }
   .print-view .map-svg { width: 100%; max-height: 110mm; }
   .print-view table { font-size: 9.5pt; }
 }
+
+/* 여행 일정 (2026-09-30) */
+.plan-day { border-top: 1px solid var(--line); padding: 10px 0; }
+.plan-day:first-child { border-top: 0; padding-top: 0; }
+.plan-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+.plan-item.done { background: #eef5f0; }
+.plan-item.done .plan-title { color: var(--muted); text-decoration: line-through; }
+.plan-item.overlap { box-shadow: inset 4px 0 0 var(--accent); }
+.plan-item input[type=checkbox] { width: 20px; height: 20px; margin: 2px 0 0; }
+.plan-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.plan-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+.plan-type { font-size: .78rem; font-weight: 700; border: 1px solid var(--text); border-radius: 4px; padding: 0 5px; }
+.plan-title { font-weight: 700; }
+.plan-meta { font-size: .86rem; color: var(--muted); margin: 2px 0 0; }
+.plan-item .actions { margin: 4px 0 0; }
+.plan-warn { color: #7a4d00; font-weight: 700; font-size: .84rem; }
+.map-svg .plan-route { fill: none; stroke: #17262a; stroke-width: 2; stroke-dasharray: 6 5; stroke-opacity: .75; }
+.map-svg .plan-pin { cursor: pointer; }
+.map-svg .plan-pin rect { fill: #fff; stroke: #17262a; stroke-width: 2; }
+.map-svg .plan-pin text { font-size: 11px; font-weight: 700; fill: #17262a; pointer-events: none; }
+.map-svg .plan-pin.done rect { fill: #e7f1ec; }
+.map-svg .plan-pin.on rect { stroke-width: 3.5; fill: #fff4dc; }
+.sw.plan { background: #fff; border: 2px solid #17262a; border-radius: 3px; }
+.sw.planline { width: 22px; height: 0; border-top: 2px dashed #17262a; border-radius: 0; vertical-align: 3px; }
+.map-svg .plan-lead { stroke: #17262a; stroke-width: 1.5; }

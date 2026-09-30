@@ -143,7 +143,7 @@ set local role anon;
 do $t$
 declare t text;
 begin
-  foreach t in array array['trip','entry','photo','expense']
+  foreach t in array array['trip','entry','photo','expense','plan']
   loop
     perform public._assert_raises(format('select * from public.%I', t), '42501', 'anon 은 ' || t || ' 를 읽을 수 없다');
   end loop;
@@ -168,7 +168,7 @@ begin
     '모든 정책이 owner_id = auth.uid() 로 묶여 있다' || coalesce(' (발견: ' || v_bad || ')', ''));
   perform public._assert_eq((select count(*) from pg_policy p join pg_class c on c.oid = p.polrelid
      join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public'),
-    16::bigint, '정책 수가 16개다 (4개 표 × 4, 재실행해도 늘지 않는다)');
+    20::bigint, '정책 수가 20개다 (5개 표 × 4, 재실행해도 늘지 않는다)');
 end $t$;
 
 -- ----------------------------------------------------------------------------
@@ -235,6 +235,65 @@ begin
 end $t$;
 commit;
 
+-- 2026-09-30 여행 일정(plan)
+begin;
+set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+do $t$
+begin
+  insert into public.plan (trip_id, plan_id, plan_type, title, plan_date, start_time, end_date, end_time, place, lat, lng, booking_ref, expense_id, done)
+  values ('t-kansai', 'pl-1', '숙소', '난바 호텔 3박', '2026-04-03', '15:00', '2026-04-06', '11:00', '오사카 · 난바', 34.6655, 135.501, 'EX-HTL-5521', 'x-1', true),
+         ('t-kansai', 'pl-2', '항공', '밤 비행기', '2026-04-05', '23:10', '2026-04-06', '01:20', '', null, null, '', null, false),
+         ('t-kansai', 'pl-3', '맛집', '타코야키', '2026-04-03', '19:00', null, '20:00', '도톤보리', null, null, '', null, false);
+  perform public._assert_eq((select count(*) from public.plan), 3::bigint, '일정 3개를 저장한다(여러 날 숙소·다음 날 도착 비행 포함)');
+  update public.plan set done = true where plan_id = 'pl-3';
+  perform public._assert((select done from public.plan where plan_id = 'pl-3'), '확인 표시를 고친다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, plan_type, title, plan_date) values ('t-kansai', 'pl-x', '쇼핑', 'x', '2026-04-03')$s$,
+    '23514', '일정 종류는 6가지만 받는다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date) values ('t-kansai', 'pl-x', ' ', '2026-04-03')$s$,
+    '23514', '일정 이름은 비워 둘 수 없다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, start_time, end_time) values ('t-kansai', 'pl-x', 'x', '2026-04-03', '11:00', '09:00')$s$,
+    '23514', '같은 날 끝 시각이 시작보다 빠르면 막는다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, end_date) values ('t-kansai', 'pl-x', 'x', '2026-04-03', '2026-04-02')$s$,
+    '23514', '끝나는 날이 시작하는 날보다 빠르면 막는다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, end_date) values ('t-kansai', 'pl-x', 'x', '2026-04-03', '2026-05-10')$s$,
+    '23514', '한 일정은 31일까지');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, lat) values ('t-kansai', 'pl-x', 'x', '2026-04-03', 34.6)$s$,
+    '23514', '일정 좌표도 위도·경도가 짝이어야 한다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, expense_id) values ('t-kansai', 'pl-x', 'x', '2026-04-03', 'x-없음')$s$,
+    '23503', '없는 지출에는 일정을 연결할 수 없다');
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date) values ('t-none', 'pl-x', 'x', '2026-04-03')$s$,
+    '23503', '없는 여행에는 일정을 붙일 수 없다');
+end $t$;
+commit;
+
+begin;
+set local request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+set local role authenticated;
+do $t$
+declare n bigint;
+begin
+  perform public._assert_eq((select count(*) from public.plan), 0::bigint, 'B 에게는 A 의 일정(예약 번호 포함)이 보이지 않는다');
+  update public.plan set done = false;
+  get diagnostics n = row_count;
+  perform public._assert_eq(n, 0::bigint, 'B 의 UPDATE 는 A 의 일정에 닿지 않는다');
+  -- B 의 여행('t-kansai', 위에서 만든 B 의 것)에 A 의 지출 id 를 연결하려 해도 (owner_id, trip_id, expense_id) 가 맞지 않아 막힌다
+  perform public._assert_raises($s$insert into public.plan (trip_id, plan_id, title, plan_date, expense_id) values ('t-kansai', 'pl-b', 'x', '2026-04-03', 'x-1')$s$,
+    '23503', 'B 의 일정은 A 의 지출에 연결할 수 없다');
+end $t$;
+commit;
+
+begin;
+set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+do $t$
+begin
+  delete from public.expense where expense_id = 'x-1';
+  perform public._assert((select expense_id is null and trip_id = 't-kansai' from public.plan where plan_id = 'pl-1'),
+    '지출을 지우면 일정은 남고 연결(expense_id)만 풀린다');
+end $t$;
+commit;
+
 -- 기록을 지우면 사진은 남고 연결(entry_id)만 풀린다
 begin;
 set local request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
@@ -272,8 +331,8 @@ do $t$
 begin
   delete from public.trip where trip_id = 't-kansai';
   perform public._assert_eq(
-    (select count(*) from public.entry) + (select count(*) from public.photo) + (select count(*) from public.expense),
-    0::bigint, '여행을 지우면 기록·사진·지출도 함께 지워진다');
+    (select count(*) from public.entry) + (select count(*) from public.photo) + (select count(*) from public.expense) + (select count(*) from public.plan),
+    0::bigint, '여행을 지우면 기록·사진·지출·일정도 함께 지워진다');
 end $t$;
 commit;
 

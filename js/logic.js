@@ -17,7 +17,7 @@
   'use strict';
 
   var SCHEMA_VERSION = 1;
-  var LIMITS = { trips: 200, photosPerTrip: 2000, entriesPerTrip: 1000, expensesPerTrip: 2000, amountMax: 1e12, members: 20 };
+  var LIMITS = { trips: 200, photosPerTrip: 2000, entriesPerTrip: 1000, expensesPerTrip: 2000, amountMax: 1e12, members: 20, plansPerTrip: 500 };
   var SAME_SPOT_M = 30;          // 이 거리 안에서 연달아 찍은 사진은 같은 곳
   var NEAR_COUNTRY_DEG = 1.0;    // 해안선이 거친(1:110m) 지도라 바닷가 좌표가 나라 밖으로 빠질 때 가까운 나라로 본다
 
@@ -592,7 +592,7 @@
   // ------------------------------------------------------------------ 여행·기록
   function newTrip(title) {
     return { id: uid('t'), title: title || '새 여행', start: '', end: '', countries: [], cities: [], memo: '',
-      home: 'KRW', rates: {}, members: [], entries: [], photos: [], expenses: [], report: '' };
+      home: 'KRW', rates: {}, members: [], entries: [], photos: [], expenses: [], plans: [], report: '' };
   }
   function newEntry(date) { return { id: uid('e'), date: date || '', time: '', place: '', text: '', keywords: '', lat: null, lng: null }; }
   function validTrip(t) {
@@ -717,6 +717,109 @@
     return lines.join('\n');
   }
 
+
+  // ------------------------------------------------------------------ 여행 일정 (2026-09-30 수강생 추가 요청)
+  // trip.plans = [{ id, type, title, date, start('HH:MM'|''), endDate(''=같은 날), end('HH:MM'|''),
+  //                 place, lat, lng, booking, memo, expenseId(''=연결 안 함), done }]
+  // 계획은 사진 동선(실제로 다닌 곳)과 따로 둔다 — 지도에는 점선·네모 핀으로 겹쳐 그려 비교한다.
+  var PLAN_TYPES = ['항공', '숙소', '관광', '맛집', '투어', '기타'];
+  var PLAN_TO_CATEGORY = { '항공': '교통', '숙소': '숙박', '관광': '관광·입장', '맛집': '식비', '투어': '관광·입장', '기타': '기타' };
+  function isTime(s) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(s || '')); }
+  function newPlan(date) {
+    return { id: uid('pl'), type: '관광', title: '', date: date || '', start: '', endDate: '', end: '',
+      place: '', lat: null, lng: null, booking: '', memo: '', expenseId: '', done: false };
+  }
+  function validPlan(p) {
+    var e = {};
+    if (PLAN_TYPES.indexOf(p.type) < 0) e.type = '종류를 골라 주세요.';
+    if (!String(p.title || '').trim()) e.title = '일정 이름을 적어 주세요.';
+    else if (String(p.title).length > 60) e.title = '일정 이름은 60자까지예요.';
+    if (!isDate(p.date)) e.date = '날짜를 골라 주세요.';
+    if (p.start && !isTime(p.start)) e.start = '시각은 00:00 ~ 23:59 로 적어 주세요.';
+    if (p.end && !isTime(p.end)) e.end = '시각은 00:00 ~ 23:59 로 적어 주세요.';
+    if (p.endDate && !isDate(p.endDate)) e.endDate = '끝나는 날 형식이 맞지 않습니다.';
+    else if (isDate(p.date) && p.endDate) {
+      if (p.endDate < p.date) e.endDate = '끝나는 날이 시작하는 날보다 빠릅니다.';
+      else if (daysBetween(p.date, p.endDate) > 31) e.endDate = '한 일정은 31일까지만 이어질 수 있어요.';
+    }
+    if (!e.start && !e.end && !e.endDate && isTime(p.start) && isTime(p.end) && (!p.endDate || p.endDate === p.date) && p.end < p.start)
+      e.end = '끝나는 시각이 시작 시각보다 빠릅니다(다음 날이면 「끝나는 날」을 골라 주세요).';
+    var hasLat = p.lat != null, hasLng = p.lng != null;
+    if (hasLat !== hasLng || (hasLat && !(hasPos(p) && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180))) e.pos = '좌표는 위도·경도를 함께 적어 주세요.';
+    if (String(p.place || '').length > 80) e.place = '장소는 80자까지예요.';
+    if (String(p.booking || '').length > 60) e.booking = '예약 번호는 60자까지예요.';
+    if (String(p.memo || '').length > 300) e.memo = '메모는 300자까지예요.';
+    if (p.expenseId != null && typeof p.expenseId !== 'string') e.expenseId = '연결한 지출 형식이 맞지 않습니다.';
+    return e;
+  }
+  // 「34.6687, 135.5013」(구글 지도에서 복사한 모양) · 「34.6687 135.5013」 → { lat, lng } 또는 null
+  function parseLatLng(s) {
+    var m = /^\s*\(?\s*(-?\d{1,2}(?:\.\d+)?)\s*(?:,|\s)\s*(-?\d{1,3}(?:\.\d+)?)\s*\)?\s*$/.exec(String(s || ''));
+    if (!m) return null;
+    var la = +m[1], ln = +m[2];
+    if (Math.abs(la) > 90 || Math.abs(ln) > 180 || (la === 0 && ln === 0)) return null;
+    return { lat: Math.round(la * 1e6) / 1e6, lng: Math.round(ln * 1e6) / 1e6 };
+  }
+  // 도시 이름 → 도시 목록(GeoNames, 오프라인)에서 찾기. 이름이 같으면 → 앞이 같으면 → 들어 있으면, 그 안에서는 인구 많은 순.
+  function citySearch(q, cities, limit) {
+    var idx = cityIndex(cities), key = String(q || '').replace(/\s+/g, '').toLowerCase();
+    if (!idx || !key) return [];
+    var hits = [];
+    idx.list.forEach(function (c) {
+      var n = c.name.replace(/\s+/g, '').toLowerCase(), at = n.indexOf(key);
+      if (at >= 0) hits.push({ rank: n === key ? 0 : at === 0 ? 1 : 2, c: c });
+    });
+    hits.sort(function (a, b) { return a.rank - b.rank || b.c.popK - a.c.popK; });
+    return hits.slice(0, limit || 6).map(function (h) { return { name: h.c.name, cc: h.c.cc, lat: h.c.lat, lng: h.c.lng, pop: h.c.popK * 1000 }; });
+  }
+  function planKey(p) { return (p.date || '') + 'T' + (p.start || '99:99') + '|' + (p.title || ''); }   // 시각 없는 일정은 그날 끝
+  function sortPlans(plans) { return (plans || []).slice().sort(function (a, b) { var x = planKey(a), y = planKey(b); return x < y ? -1 : x > y ? 1 : 0; }); }
+  // 같은 날 시각이 겹치는 일정 id 목록 (시작·끝 시각이 다 있는 일정끼리, 여러 날 이어지는 숙소는 뺌)
+  function planOverlaps(plans) {
+    var out = {}, byDay = {};
+    (plans || []).forEach(function (p) {
+      if (!isTime(p.start) || !isTime(p.end) || (p.endDate && p.endDate !== p.date) || p.end <= p.start) return;
+      (byDay[p.date] = byDay[p.date] || []).push(p);
+    });
+    Object.keys(byDay).forEach(function (d) {
+      var a = byDay[d];
+      for (var i = 0; i < a.length; i++) for (var j = i + 1; j < a.length; j++) {
+        if (a[i].start < a[j].end && a[j].start < a[i].end) { out[a[i].id] = 1; out[a[j].id] = 1; }
+      }
+    });
+    return Object.keys(out);
+  }
+  // 날짜별 일정 [{ date, dayNo, plans }] — 여행 기간의 날은 일정이 없어도 넣는다(빈 날이 보이게)
+  function plansByDay(trip) {
+    var set = {};
+    tripDates(trip).forEach(function (d) { set[d] = []; });
+    sortPlans(trip.plans).forEach(function (p) { if (isDate(p.date)) (set[p.date] = set[p.date] || []).push(p); });
+    return Object.keys(set).sort().map(function (d) { return { date: d, dayNo: dayNo(trip, d), plans: set[d] }; });
+  }
+  function planProgress(trip) {
+    var ps = trip.plans || [];
+    return { total: ps.length, done: ps.filter(function (p) { return p.done; }).length };
+  }
+  // 지도에 그릴 계획 동선 [{ date, dayNo, stops:[{ lat, lng, plan }] }] — 좌표 있는 일정만, 시각순
+  function planRoutes(trip) {
+    return plansByDay(trip).map(function (g) {
+      return { date: g.date, dayNo: g.dayNo, stops: g.plans.filter(hasPos).map(function (p) { return { lat: p.lat, lng: p.lng, plan: p }; }) };
+    }).filter(function (r) { return r.stops.length; });
+  }
+  // 일정에 연결한 지출 → { expense, won(원 환산, 환율 없으면 null) } 또는 null(연결 없음·지워진 지출)
+  function planCost(trip, p) {
+    if (!p.expenseId) return null;
+    var x = (trip.expenses || []).filter(function (y) { return y.id === p.expenseId; })[0];
+    if (!x) return null;
+    var h = toHome(x, trip.rates || {}, trip.home || 'KRW');
+    return { expense: x, won: h.ok ? h.value : null };
+  }
+  // 일정 → 새 지출 (예약하며 낸 돈을 경비에 바로 적기). 분류는 종류에서 짐작
+  function expenseFromPlan(p, amount, currency) {
+    return { id: uid('x'), date: p.date, amount: amount, currency: currency, category: PLAN_TO_CATEGORY[p.type] || '기타',
+      memo: String((p.type === '기타' ? '' : p.type + ' · ') + (p.title || '')).slice(0, 80) };
+  }
+
   // ------------------------------------------------------------------ 저장 자료 검사 (가져오기)
   function checkDb(o) {
     var errs = [];
@@ -733,6 +836,12 @@
       if (t.members != null && (!Array.isArray(t.members) || t.members.length > LIMITS.members ||
           t.members.some(function (m) { return !m || typeof m.id !== 'string' || !String(m.name || '').trim(); }))) errs.push(n + ': 함께 간 사람(members) 형식이 맞지 않습니다.');
       if ((t.photos || []).length > LIMITS.photosPerTrip) errs.push(n + ': 사진은 ' + LIMITS.photosPerTrip + '장까지입니다.');
+      if (t.plans != null && !Array.isArray(t.plans)) errs.push(n + ': 일정(plans) 목록 형식이 맞지 않습니다.');
+      else if ((t.plans || []).length > LIMITS.plansPerTrip) errs.push(n + ': 일정은 ' + LIMITS.plansPerTrip + '개까지입니다.');
+      else (t.plans || []).forEach(function (p, j) {
+        var er = p && typeof p === 'object' && typeof p.id === 'string' ? validPlan(p) : { id: '형식이 맞지 않습니다.' };
+        if (!ok(er)) errs.push(n + ' 일정 ' + (j + 1) + '번: ' + er[Object.keys(er)[0]]);
+      });
     });
     return errs.filter(function (x, i, a) { return a.indexOf(x) === i; }).slice(0, 12);
   }
@@ -754,7 +863,10 @@
     VIEW_CURRENCIES: VIEW_CURRENCIES, fromHome: fromHome, money: money, equivalents: equivalents,
     ME: ME, members: members, splitWon: splitWon, payerOf: payerOf, sharersOf: sharersOf, settle: settle, minTransfers: minTransfers,
     cityIndex: cityIndex, cityAt: cityAt, placeName: placeName, addCitiesFromPhotos: addCitiesFromPhotos,
-    GEO_PROVIDERS: GEO_PROVIDERS, geoRequest: geoRequest, geoParse: geoParse
+    GEO_PROVIDERS: GEO_PROVIDERS, geoRequest: geoRequest, geoParse: geoParse,
+    PLAN_TYPES: PLAN_TYPES, PLAN_TO_CATEGORY: PLAN_TO_CATEGORY, isTime: isTime, newPlan: newPlan, validPlan: validPlan, parseLatLng: parseLatLng,
+    citySearch: citySearch, sortPlans: sortPlans, planOverlaps: planOverlaps, plansByDay: plansByDay, planProgress: planProgress,
+    planRoutes: planRoutes, planCost: planCost, expenseFromPlan: expenseFromPlan
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.JLogic = API;

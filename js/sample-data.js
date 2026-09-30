@@ -10,6 +10,10 @@
     return { id: 'sp-' + n, name: file, size: size, src: 'samples/' + file, takenAt: takenAt, fileTime: '',
       dateSource: takenAt ? 'exif' : 'none', lat: lat, lng: lng, offset: offset || '', entryId: entryId || '' };
   }
+  function plan(n, type, title, date, start, endDate, end, place, lat, lng, booking, memo, expenseId, done) {
+    return { id: 'spl-' + n, type: type, title: title, date: date, start: start, endDate: endDate, end: end, place: place,
+      lat: lat, lng: lng, booking: booking, memo: memo, expenseId: expenseId, done: !!done };
+  }
   function x(n, date, amount, currency, category, memo, paidBy, split) {
     var o = { id: 'sx-' + n, date: date, amount: amount, currency: currency, category: category, memo: memo };
     if (paidBy) o.paidBy = paidBy;
@@ -61,6 +65,20 @@
         x(10, '2026-04-05', 4300, 'JPY', '쇼핑', '기념품'),
         x(11, '2026-04-06', 1000, 'JPY', '식비', '점심'),
         x(12, '2026-04-06', 12.5, 'USD', '쇼핑', '공항 면세점')
+      ],
+      // 여행 일정(계획) — 예약 번호는 모두 가짜(EX-…). 구로몬 시장은 계획만 하고 사진이 없는 곳(지도에서 계획과 실제가 갈리는 예)
+      plans: [
+        plan(1, '항공', '인천 → 간사이 (가는 편)', '2026-04-03', '09:00', '', '11:05', '간사이 국제공항', 34.4347, 135.244, 'EX-FLT-0403', '모바일 탑승권, 수하물 15kg', 'sx-1', true),
+        plan(2, '숙소', '난바 호텔 3박', '2026-04-03', '15:00', '2026-04-06', '11:00', '오사카 · 난바', 34.6655, 135.501, 'EX-HTL-5521', '체크인 15시 · 체크아웃 11시', 'sx-3', true),
+        plan(3, '맛집', '도톤보리 타코야키', '2026-04-03', '19:00', '', '20:00', '오사카 · 도톤보리', 34.6687, 135.5013, '', '', '', true),
+        plan(4, '관광', '오사카성 천수각', '2026-04-04', '09:30', '', '11:30', '오사카성 공원', 34.6873, 135.5262, '', '', 'sx-5', true),
+        plan(5, '맛집', '구로몬 시장 점심', '2026-04-04', '12:30', '', '14:00', '오사카 · 구로몬 시장', 34.6656, 135.5067, '', '비 오면 우메다 지하상가로', '', false),
+        plan(6, '관광', '우메다 공중정원 전망대', '2026-04-04', '17:30', '', '19:00', '오사카 · 우메다', 34.7053, 135.4906, 'EX-TKT-0404', '해질녘 입장', 'sx-6', true),
+        plan(7, '투어', '후시미 이나리 아침 걷기', '2026-04-05', '08:30', '', '10:00', '교토 · 후시미 이나리', 34.9671, 135.7727, '', '사람 적은 아침에', '', true),
+        plan(8, '관광', '기요미즈데라', '2026-04-05', '13:00', '', '14:30', '교토 · 기요미즈데라', 34.9949, 135.785, '', '', 'sx-9', true),
+        plan(9, '맛집', '기온 골목 저녁', '2026-04-05', '18:00', '', '19:30', '교토 · 기온', 35.0037, 135.7788, 'EX-RST-7788', '2명 예약', '', false),
+        plan(10, '관광', '나라 공원 사슴', '2026-04-06', '10:00', '', '12:00', '나라 공원', 34.6851, 135.843, '', '', '', true),
+        plan(11, '항공', '간사이 → 인천 (오는 편)', '2026-04-06', '16:40', '', '18:45', '간사이 국제공항', 34.4347, 135.244, 'EX-FLT-0403', '출발 2시간 전 도착', 'sx-1', false)
       ]
     };
   }
@@ -72,7 +90,7 @@
         countries: ['704'], cities: ['다낭', '호이안'], memo: '세 사람이 나눠 낸 여행 — 「정산」 화면 예시', home: 'KRW',
         rates: { VND: 0.055, USD: 1385.5, JPY: 9.12, EUR: 1480 }, report: '',
         members: [{ id: 'm-me', name: '나' }, { id: 'm-a', name: '가족A' }, { id: 'm-b', name: '가족B' }],
-        entries: [], photos: [],
+        entries: [], photos: [], plans: [],
         expenses: [
           x(21, '2025-12-21', 450000, 'VND', '식비', '해산물 저녁', 'm-me'),
           x(22, '2025-12-22', 1200000, 'VND', '관광·입장', '바나힐', 'm-a'),
@@ -81,7 +99,7 @@
         ] },
       { id: 'sample-europe', sample: true, title: '파리·로마 (예시)', start: '2024-05-10', end: '2024-05-18',
         countries: ['250', '380', '336'], cities: ['파리', '로마', '바티칸'], memo: '', home: 'KRW', rates: {}, members: [], report: '',
-        entries: [], photos: [], expenses: [] }
+        entries: [], photos: [], expenses: [], plans: [] }
     ];
   }
 

@@ -448,4 +448,96 @@ test('함께 간 사람·낸 사람·나눌 사람이 든 백업은 통과, 형�
   assert.deepEqual(L.checkDb(old), []);
 });
 
+
+console.log('여행 일정 (2026-09-30 추가 요청)');
+test('예시 일정 11개: 모두 올바르고, 날짜별·시각순으로 묶이며 여행 4일이 다 나온다', () => {
+  const t = S.kansai();
+  for (const p of t.plans) assert.deepEqual(L.validPlan(p), {}, p.id);
+  const days = L.plansByDay({ ...t, plans: [...t.plans].reverse() });
+  assert.deepEqual(days.map((g) => g.date), ['2026-04-03', '2026-04-04', '2026-04-05', '2026-04-06']);
+  assert.deepEqual(days.map((g) => g.plans.length), [3, 3, 3, 2]);
+  assert.deepEqual(days[0].plans.map((p) => p.start), ['09:00', '15:00', '19:00']);
+  assert.equal(days[3].dayNo, 4);
+  assert.deepEqual(L.planProgress(t), { total: 11, done: 8 });
+});
+test('시각 없는 일정은 그날 끝, 여행 기간 밖 날짜도 따로 나온다', () => {
+  const t = { start: '2026-04-03', end: '2026-04-04', plans: [
+    { id: 'a', date: '2026-04-03', start: '', title: '저녁 산책' }, { id: 'b', date: '2026-04-03', start: '08:00', title: '아침' },
+    { id: 'c', date: '2026-04-10', start: '10:00', title: '다음 여행 준비' }] };
+  const days = L.plansByDay(t);
+  assert.deepEqual(days.map((g) => [g.date, g.dayNo, g.plans.map((p) => p.id).join('')]), [['2026-04-03', 1, 'ba'], ['2026-04-04', 2, ''], ['2026-04-10', 0, 'c']]);
+});
+test('일정 검사: 이름·날짜·종류·시각 순서·끝나는 날·좌표 짝', () => {
+  const ok = { ...L.newPlan('2026-04-03'), title: '오사카성', start: '09:30', end: '11:30' };
+  assert.deepEqual(L.validPlan(ok), {});
+  assert.ok(L.validPlan({ ...ok, title: ' ' }).title);
+  assert.ok(L.validPlan({ ...ok, date: '' }).date);
+  assert.ok(L.validPlan({ ...ok, type: '쇼핑' }).type);
+  assert.ok(L.validPlan({ ...ok, start: '25:00' }).start);
+  assert.ok(L.validPlan({ ...ok, end: '09:00' }).end, '같은 날 끝이 시작보다 빠르면 잡는다');
+  assert.deepEqual(L.validPlan({ ...ok, start: '23:10', endDate: '2026-04-04', end: '01:20' }), {}, '밤 비행기 — 다음 날 도착은 된다');
+  assert.ok(L.validPlan({ ...ok, endDate: '2026-04-02' }).endDate);
+  assert.ok(L.validPlan({ ...ok, endDate: '2026-05-10' }).endDate, '31일을 넘으면 막는다');
+  assert.ok(L.validPlan({ ...ok, lat: 34.6, lng: null }).pos);
+  assert.deepEqual(L.validPlan({ ...ok, lat: 34.6, lng: 135.5 }), {});
+});
+test('같은 날 시각이 겹치는 일정만 알려 준다(맞닿은 것·여러 날 숙소는 겹침 아님)', () => {
+  const ps = [
+    { id: 'a', date: '2026-04-04', start: '09:30', end: '11:30' }, { id: 'b', date: '2026-04-04', start: '11:00', end: '12:00' },
+    { id: 'c', date: '2026-04-04', start: '12:00', end: '13:00' }, { id: 'd', date: '2026-04-05', start: '11:00', end: '12:00' },
+    { id: 'h', date: '2026-04-03', start: '15:00', endDate: '2026-04-06', end: '11:00' }, { id: 'e', date: '2026-04-04', start: '10:00', end: '' }];
+  assert.deepEqual(L.planOverlaps(ps).sort(), ['a', 'b']);
+  assert.deepEqual(L.planOverlaps(S.kansai().plans), [], '예시 일정은 겹치지 않는다');
+});
+test('좌표 붙여넣기: 구글 지도 모양·공백·괄호, 범위 밖·(0,0)·글자는 거절', () => {
+  assert.deepEqual(L.parseLatLng('34.6655, 135.5010'), { lat: 34.6655, lng: 135.501 });
+  assert.deepEqual(L.parseLatLng(' (37.5665 126.978) '), { lat: 37.5665, lng: 126.978 });
+  assert.deepEqual(L.parseLatLng('-33.8568,151.2153'), { lat: -33.8568, lng: 151.2153 });
+  for (const bad of ['91, 10', '10, 181', '0, 0', '오사카', '34.6', '']) assert.equal(L.parseLatLng(bad), null, bad);
+});
+test('도시 이름으로 위치 찾기(GeoNames, 오프라인): 같은 이름 → 앞이 같은 이름 순, 인구 많은 곳 먼저', () => {
+  const r = L.citySearch('오사카', C, 3);
+  assert.equal(r[0].name, '오사카'); assert.equal(r[0].cc, 'JP');
+  assert.ok(Math.abs(r[0].lat - 34.69) < 0.1 && Math.abs(r[0].lng - 135.5) < 0.1);
+  assert.equal(L.citySearch('교토', C)[0].cc, 'JP');
+  assert.equal(L.citySearch('파리', C)[0].cc, 'FR', '같은 이름이 여럿이면 인구 많은 곳');
+  assert.deepEqual(L.citySearch('', C), []);
+  assert.deepEqual(L.citySearch('없는도시이름가나다', C), []);
+});
+test('지도용 계획 동선: 좌표 있는 일정만 날짜별 시각순, 사진이 없는 계획(구로몬 시장)도 들어간다', () => {
+  const t = S.kansai();
+  const pr = L.planRoutes(t);
+  assert.deepEqual(pr.map((r) => r.stops.length), [3, 3, 3, 2]);
+  assert.ok(pr[1].stops.some((s) => s.plan.title.includes('구로몬')));
+  const actual = L.tripRoutes(t).flatMap((r) => r.stops);
+  const kuromon = pr[1].stops.find((s) => s.plan.title.includes('구로몬'));
+  assert.ok(actual.every((s) => L.haversine(s, kuromon) > 100), '실제 사진 동선에는 구로몬 시장이 없다(계획과 실제가 갈리는 예)');
+  const t2 = { ...t, plans: t.plans.map((p) => ({ ...p, lat: null, lng: null })) };
+  assert.deepEqual(L.planRoutes(t2), []);
+});
+test('일정의 비용 = 연결한 지출(원 환산), 지운 지출·환율 없는 통화도 안전하게', () => {
+  const t = S.kansai();
+  const hotel = t.plans.find((p) => p.type === '숙소');
+  assert.deepEqual(L.planCost(t, hotel), { expense: t.expenses.find((x) => x.id === 'sx-3'), won: Math.round(38400 * 9.12) });
+  assert.equal(L.planCost(t, { ...hotel, expenseId: '' }), null);
+  assert.equal(L.planCost(t, { ...hotel, expenseId: 'sx-없음' }), null);
+  assert.equal(L.planCost({ ...t, rates: {} }, hotel).won, null);
+  const x = L.expenseFromPlan({ ...hotel }, 38400, 'JPY');
+  assert.equal(x.category, '숙박'); assert.equal(x.date, '2026-04-03'); assert.equal(x.memo, '숙소 · 난바 호텔 3박');
+  assert.deepEqual(L.validExpense(x), {});
+  assert.equal(L.expenseFromPlan({ ...hotel, type: '항공' }, 1, 'KRW').category, '교통');
+  assert.equal(L.expenseFromPlan({ ...hotel, type: '맛집' }, 1, 'KRW').category, '식비');
+});
+test('백업: 일정이 든 여행은 통과, 없는 예전 백업도 통과, 틀린 일정은 알려 준다', () => {
+  const db = { schemaVersion: 1, trips: [S.kansai(), ...S.past()] };
+  assert.deepEqual(L.checkDb(db), []);
+  const old = L.clone(db); old.trips.forEach((t) => { delete t.plans; });
+  assert.deepEqual(L.checkDb(old), []);
+  const bad = L.clone(db); bad.trips[0].plans[2].end = '18:00';
+  assert.ok(L.checkDb(bad).some((m) => m.includes('일정 3번')));
+  const bad2 = L.clone(db); bad2.trips[0].plans = 'x';
+  assert.ok(L.checkDb(bad2).some((m) => m.includes('plans')));
+  assert.deepEqual(L.newTrip('x').plans, []);
+});
+
 console.log(`\n${passed}개 통과${process.exitCode ? ' — 실패 있음' : ''}`);

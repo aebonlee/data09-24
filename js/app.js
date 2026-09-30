@@ -13,7 +13,7 @@
   var db = null;                      // { schemaVersion, trips, currentId }
   var thumbs = {};                    // 사진 id → 미리보기 URL (IndexedDB 에서 읽어 둔 것)
   var ui = { tab: 'trip', entryId: null, expenseId: null, mapDay: '', pin: null, lastCur: 'KRW', lastDate: '',
-    logView: 'diary', viewCur: 'KRW', lbList: [], lbIndex: 0, lbFrom: null, geoBusy: false };
+    logView: 'diary', viewCur: 'KRW', lbList: [], lbIndex: 0, lbFrom: null, geoBusy: false, planId: null, planPos: null, planPin: null };
   function CITIES() { return window.JOURNAL_CITIES || null; }     // 아직 안 왔으면 null — 도시 이름 없이 그린다
   function placeOf(p) { return L.placeName(p, CITIES()); }
 
@@ -95,11 +95,11 @@
     var t = cur();
     document.querySelectorAll('.tab').forEach(function (s) { s.hidden = !t || s.id !== 'tab-' + ui.tab; });
     if (!t) return;
-    ({ trip: renderTrip, log: renderLog, map: renderMap, money: renderMoney, settle: renderSettle, export: renderExport })[ui.tab](t);
+    ({ trip: renderTrip, plan: renderPlan, log: renderLog, map: renderMap, money: renderMoney, settle: renderSettle, export: renderExport })[ui.tab](t);
   }
   function switchTrip(id) {
     db.currentId = id; ui.entryId = null; ui.expenseId = null; ui.mapDay = ''; ui.pin = null;
-    save(); fillTripForm(); closeEntry(); resetExpenseForm(); loadThumbs(cur()); renderTab();
+    ui.planPin = null; save(); fillTripForm(); closeEntry(); resetExpenseForm(); resetPlanForm(); loadThumbs(cur()); renderTab();
   }
 
   // ------------------------------------------------------------ 1. 여행
@@ -154,6 +154,143 @@
     tripErrors(t); save(); renderHeader(); renderStats(t);
     var nd = L.nightsDays(t);
     $('tPeriod').textContent = nd.days ? nd.label + ' · ' + L.dateLabel(t.start) + ' ~ ' + L.dateLabel(t.end) : '날짜를 비워 두면 사진의 찍은 날짜로 채워 드려요.';
+  }
+
+
+  // ------------------------------------------------------------ 1-2. 여행 일정 (2026-09-30)
+  function plansOf(t) { if (!Array.isArray(t.plans)) t.plans = []; return t.plans; }
+  function planById(t, id) { return plansOf(t).filter(function (p) { return p.id === id; })[0]; }
+  function planTime(p) {
+    var a = p.start || '', b = p.end || '', multi = p.endDate && p.endDate !== p.date;
+    if (multi) return (a || '') + ' → ' + L.dateLabel(p.endDate).replace(/ \(.\)$/, '') + (b ? ' ' + b : '');
+    return a && b ? a + ' ~ ' + b : a || (b ? '~ ' + b : '시각 미정');
+  }
+  function expenseLabel(t, x) {
+    return x.date.slice(5).replace('-', '/') + ' · ' + x.category + (x.memo ? ' · ' + x.memo : '') + ' · ' + L.comma(x.amount) + ' ' + x.currency;
+  }
+  function fillPlanSelects(t, sel) {
+    if (!$('pType').options.length) {
+      $('pType').innerHTML = L.PLAN_TYPES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
+      $('pCur').innerHTML = L.CURRENCIES.map(function (c) { return '<option value="' + c[0] + '">' + c[0] + ' · ' + c[1] + '</option>'; }).join('');
+    }
+    var xs = t.expenses.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    $('pExpense').innerHTML = '<option value="">연결 안 함</option><option value="__new">새 지출로 적기(아래 금액)</option>' +
+      xs.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(expenseLabel(t, x)) + '</option>'; }).join('');
+    $('pExpense').value = sel === '__new' || (sel && xs.some(function (x) { return x.id === sel; })) ? sel : '';
+    $('pNewCost').hidden = $('pExpense').value !== '__new';
+  }
+  function showPlanPos() {
+    var pos = ui.planPos;
+    $('pClearPos').hidden = !pos; $('pPosErr').textContent = '';
+    if (!pos) { $('pPosNote').textContent = '위치를 넣으면 「동선 지도」에 계획 핀이 생겨요.'; return; }
+    var c = L.countryAt(pos.lat, pos.lng, WORLD), city = L.cityAt(pos.lat, pos.lng, CITIES());
+    $('pPosNote').textContent = '지도 위치: ' + pos.lat.toFixed(4) + ', ' + pos.lng.toFixed(4) + ' (' + ([city ? city.name : '', c ? c.ko : ''].filter(Boolean).join(', ') || '도시 정보 없음') + ')';
+  }
+  function resetPlanForm(date) {
+    var t = cur(); ui.planId = null; ui.planPos = null;
+    if (!t) return;
+    fillPlanSelects(t, '');
+    $('pType').value = '관광'; $('pTitle').value = ''; $('pDate').value = date || $('pDate').value || t.start || '';
+    $('pStart').value = ''; $('pEndDate').value = ''; $('pEnd').value = ''; $('pPlace').value = ''; $('pPos').value = '';
+    $('pBooking').value = ''; $('pMemo').value = ''; $('pDone').checked = false; $('pAmount').value = ''; $('pCur').value = ui.lastCur;
+    $('pCityHits').innerHTML = '';
+    ['pTitleErr', 'pDateErr', 'pEndDateErr', 'pEndErr', 'pAmountErr'].forEach(function (id) { $(id).textContent = ''; });
+    $('pSubmit').textContent = '추가'; $('pCancel').hidden = true; $('pDelete').hidden = true;
+    showPlanPos();
+  }
+  function editPlan(p) {
+    var t = cur(); ui.planId = p.id; ui.planPos = L.hasPos(p) ? { lat: p.lat, lng: p.lng } : null;
+    fillPlanSelects(t, p.expenseId);
+    $('pType').value = p.type; $('pTitle').value = p.title; $('pDate').value = p.date; $('pStart').value = p.start || '';
+    $('pEndDate').value = p.endDate || ''; $('pEnd').value = p.end || ''; $('pPlace').value = p.place || '';
+    $('pPos').value = ui.planPos ? ui.planPos.lat + ', ' + ui.planPos.lng : '';
+    $('pBooking').value = p.booking || ''; $('pMemo').value = p.memo || ''; $('pDone').checked = !!p.done;
+    $('pCityHits').innerHTML = '';
+    $('pSubmit').textContent = '고친 내용 저장'; $('pCancel').hidden = false; $('pDelete').hidden = false;
+    showPlanPos();
+    $('pForm').scrollIntoView({ block: 'start', behavior: 'smooth' });
+    $('pTitle').focus({ preventScroll: true });
+  }
+  function renderPlan(t) {
+    if (document.activeElement !== $('pExpense')) fillPlanSelects(t, $('pExpense').value);   // 지출 목록이 바뀌었을 수 있어 다시 채우되 고른 값은 둔다
+    var pr = L.planProgress(t), over = L.planOverlaps(plansOf(t));
+    $('pProgress').textContent = pr.total ? '확인 ' + pr.done + ' / ' + pr.total : '';
+    var days = L.plansByDay(t);
+    $('planList').innerHTML = days.length ? days.map(function (g) {
+      return '<div class="plan-day"><div class="day-head">' + (g.dayNo ? '<span class="day-no">Day ' + g.dayNo + '</span>' : '<span class="tag">여행 기간 밖</span>') +
+        '<h3>' + esc(L.dateLabel(g.date)) + '</h3><button type="button" class="btn tiny" data-new-plan="' + g.date + '">이날 일정 더하기</button></div>' +
+        (g.plans.length ? g.plans.map(function (p) {
+          var cost = L.planCost(t, p), ov = over.indexOf(p.id) >= 0;
+          return '<div class="plan-item' + (p.done ? ' done' : '') + (ov ? ' overlap' : '') + '">' +
+            '<input type="checkbox" data-plan-done="' + esc(p.id) + '"' + (p.done ? ' checked' : '') + ' aria-label="' + esc(p.title) + ' 확인 끝">' +
+            '<div><div class="plan-head"><span class="plan-time">' + esc(planTime(p)) + '</span><span class="plan-type">' + esc(p.type) + '</span><span class="plan-title">' + esc(p.title) + '</span></div>' +
+            (p.place || L.hasPos(p) ? '<p class="plan-meta">' + esc(p.place || '') + (L.hasPos(p) ? (p.place ? ' · ' : '') + '지도 위치 있음' : '') + '</p>' : '') +
+            (p.booking ? '<p class="plan-meta">예약 번호 ' + esc(p.booking) + '</p>' : '') +
+            (cost ? '<p class="plan-meta">비용 ' + esc(L.comma(cost.expense.amount) + ' ' + cost.expense.currency) + (cost.expense.currency !== t.home ? ' (' + (cost.won == null ? '환율 없음' : L.won(cost.won)) + ')' : '') + ' — 경비에 적힘</p>' : '') +
+            (p.memo ? '<p class="plan-meta">' + esc(p.memo) + '</p>' : '') +
+            (ov ? '<p class="plan-warn">같은 날 시각이 겹치는 일정이 있어요.</p>' : '') +
+            '<div class="actions"><button type="button" class="btn tiny" data-edit-plan="' + esc(p.id) + '">고치기</button>' +
+            (L.hasPos(p) ? '<button type="button" class="btn tiny" data-plan-map="' + esc(p.id) + '">지도에서 보기</button>' : '') +
+            '<button type="button" class="btn tiny" data-del-plan="' + esc(p.id) + '">지우기</button></div></div></div>';
+        }).join('') : '<p class="small">아직 일정이 없어요.</p>') + '</div>';
+    }).join('') : '<p class="hint">여행 기간을 적거나 왼쪽에서 일정을 더하면 날짜별 일정표가 생겨요.</p>';
+  }
+  function submitPlan() {
+    var t = cur(), ps = plansOf(t);
+    var p = { id: ui.planId || L.uid('pl'), type: $('pType').value, title: $('pTitle').value.trim(), date: $('pDate').value,
+      start: $('pStart').value, endDate: $('pEndDate').value, end: $('pEnd').value, place: $('pPlace').value.trim(),
+      lat: ui.planPos ? ui.planPos.lat : null, lng: ui.planPos ? ui.planPos.lng : null, booking: $('pBooking').value.trim(),
+      memo: $('pMemo').value.trim(), expenseId: $('pExpense').value === '__new' ? '' : $('pExpense').value, done: $('pDone').checked };
+    if (p.endDate === p.date) p.endDate = '';
+    // 좌표 칸에 적었는데 아직 반영 안 된 값
+    if ($('pPos').value.trim()) {
+      var pos = L.parseLatLng($('pPos').value);
+      if (!pos) { $('pPosErr').textContent = '「위도, 경도」 모양으로 적어 주세요(예: 34.6655, 135.5010).'; $('pPos').focus(); return; }
+      p.lat = pos.lat; p.lng = pos.lng;
+    } else if (!ui.planPos) { p.lat = null; p.lng = null; }
+    var e = L.validPlan(p);
+    $('pTitleErr').textContent = e.title || ''; $('pDateErr').textContent = e.date || ''; $('pEndDateErr').textContent = e.endDate || '';
+    $('pEndErr').textContent = e.end || e.start || '';
+    if (!L.ok(e)) return;
+    var newX = null;
+    if ($('pExpense').value === '__new') {
+      var a = L.parseAmount($('pAmount').value);
+      newX = L.expenseFromPlan(p, a, $('pCur').value);
+      var ex = L.validExpense(newX);
+      $('pAmountErr').textContent = ex.amount || '';
+      if (!L.ok(ex)) return;
+      if (t.expenses.length >= L.LIMITS.expensesPerTrip) { toast('한 여행의 지출은 ' + L.LIMITS.expensesPerTrip + '건까지예요.'); return; }
+      t.expenses.push(newX); p.expenseId = newX.id; ui.lastCur = newX.currency;
+    }
+    var i = ps.findIndex(function (y) { return y.id === p.id; });
+    if (i >= 0) ps[i] = p;
+    else {
+      if (ps.length >= L.LIMITS.plansPerTrip) { toast('한 여행의 일정은 ' + L.LIMITS.plansPerTrip + '개까지예요.'); return; }
+      ps.push(p);
+    }
+    save(); toast((i >= 0 ? '일정을 고쳤어요.' : '일정을 더했어요.') + (newX ? ' 비용은 「경비」에도 적었어요.' : ''));
+    resetPlanForm(p.date); renderTab(); $('pTitle').focus();
+  }
+  function deletePlan(id) {
+    var t = cur(), ps = plansOf(t), k = ps.findIndex(function (y) { return y.id === id; }); if (k < 0) return;
+    var old = ps[k]; ps.splice(k, 1); if (ui.planId === old.id) resetPlanForm(); save(); renderTab();
+    toast('일정을 지웠어요' + (old.expenseId ? '(연결한 지출은 경비에 남아 있어요)' : '') + '.', function () { ps.splice(k, 0, old); save(); renderTab(); });
+  }
+  function planInfo(t, p) {
+    var cost = L.planCost(t, p);
+    return '<div class="pin-card"><div class="txt"><b>계획 · ' + esc(p.type) + ' · ' + esc(p.title) + '</b>' +
+      '<p class="small">' + esc(L.dateLabel(p.date)) + ' ' + esc(planTime(p)) + (p.place ? ' · ' + esc(p.place) : '') + (p.done ? ' · 확인 끝' : ' · 아직 확인 전') + '</p>' +
+      (p.booking ? '<p class="small">예약 번호 ' + esc(p.booking) + '</p>' : '') +
+      (cost ? '<p class="small">비용 ' + esc(L.comma(cost.expense.amount) + ' ' + cost.expense.currency) + '</p>' : '') +
+      (p.memo ? '<p>' + esc(p.memo) + '</p>' : '') +
+      '<button type="button" class="btn small" data-goto-plan="' + esc(p.id) + '">일정표에서 고치기</button></div></div>';
+  }
+  function showPlanPin(id) {
+    var t = cur(), p = planById(t, id); if (!p) return;
+    ui.planPin = id; ui.pin = null; stepLabel();
+    document.querySelectorAll('#tripMap .pin').forEach(function (g) { g.classList.remove('on'); });
+    document.querySelectorAll('#tripMap .plan-pin').forEach(function (g) { g.classList.toggle('on', g.dataset.planPin === id); });
+    $('pinInfo').innerHTML = planInfo(t, p);
   }
 
   // ------------------------------------------------------------ 2. 기록·사진
@@ -382,24 +519,28 @@
 
   // ------------------------------------------------------------ 3. 동선 지도
   function renderMap(t) {
-    var routes = L.tripRoutes(t);
-    var sel = $('mDay');
-    sel.innerHTML = '<option value="">여행 전체</option>' + routes.map(function (r) {
-      return '<option value="' + r.date + '"' + (ui.mapDay === r.date ? ' selected' : '') + '>' + (r.dayNo ? 'Day ' + r.dayNo + ' · ' : '') + esc(L.dateLabel(r.date)) + '</option>';
+    var routes = L.tripRoutes(t), showPlans = $('mPlans').checked, planR = showPlans ? L.planRoutes(t) : [];
+    var sel = $('mDay'), dset = {};
+    routes.concat(planR).forEach(function (r) { dset[r.date] = r.dayNo; });
+    var dates = Object.keys(dset).sort();
+    sel.innerHTML = '<option value="">여행 전체</option>' + dates.map(function (d) {
+      return '<option value="' + d + '"' + (ui.mapDay === d ? ' selected' : '') + '>' + (dset[d] ? 'Day ' + dset[d] + ' · ' : '') + esc(L.dateLabel(d)) + '</option>';
     }).join('');
-    if (ui.mapDay && !routes.some(function (r) { return r.date === ui.mapDay; })) ui.mapDay = '';
+    if (ui.mapDay && !dset.hasOwnProperty(ui.mapDay)) ui.mapDay = '';
     sel.value = ui.mapDay;
     // 지도 폭 = 화면에 보이는 폭 — 휴대폰에서 핀·글자가 작아지지 않게(viewBox 를 줄여 그림)
     var boxW = Math.round($('tripMap').clientWidth || 960), mapW = Math.max(300, Math.min(1200, boxW));
-    var out = M.trip({ trip: t, routes: routes, day: ui.mapDay, thumbs: $('mThumbs').checked, width: mapW,
+    var out = M.trip({ trip: t, routes: routes, plans: planR, day: ui.mapDay, thumbs: $('mThumbs').checked, width: mapW,
       thumbUrl: function (id) { return thumbUrl(photoById(t, id)); } });
     ui.stops = out.stops;
     $('tripMap').innerHTML = out.svg;
-    $('mLegend').innerHTML = out.empty ? '<span>위치가 있는 사진이 아직 없어요. 사진을 불러오면 동선이 그려져요.</span>' :
+    $('mLegend').innerHTML = out.empty ? '<span>위치가 있는 사진이나 일정이 아직 없어요. 사진을 불러오거나 「일정」에 위치를 넣으면 지도에 그려져요.</span>' :
       routes.filter(function (r) { return !ui.mapDay || r.date === ui.mapDay; }).map(function (r, i) {
-        return '<span><span class="sw" style="background:' + M.dayColor(routes.indexOf(r)) + '"></span>' + (r.dayNo ? 'Day ' + r.dayNo + ' ' : '') + esc(L.dateLabel(r.date)) + '</span>';
-      }).join('');
-    if (ui.pin != null && ui.stops[ui.pin]) showPin(ui.pin); else { $('pinInfo').innerHTML = ''; stepLabel(); }
+        return '<span><span class="sw" style="background:' + M.dayColor(routes.indexOf(r)) + '"></span>' + (r.dayNo ? 'Day ' + r.dayNo + ' ' : '') + esc(L.dateLabel(r.date)) + ' (사진)</span>';
+      }).join('') + (out.plans ? '<span><span class="sw planline"></span><span class="sw plan"></span>계획한 일정 ' + out.plans + '곳 (네모 안 글자 = 종류)</span>' : '');
+    if (ui.pin != null && ui.stops[ui.pin]) showPin(ui.pin);
+    else if (ui.planPin && showPlans && document.querySelector('#tripMap [data-plan-pin="' + ui.planPin + '"]')) showPlanPin(ui.planPin);
+    else { ui.planPin = null; $('pinInfo').innerHTML = ''; stepLabel(); }
     var g = St.getGeo(); $('geoActs').hidden = !(g.on && g.key && ui.stops.length);
     $('routeList').innerHTML = routes.length ? routes.map(function (r, i) {
       return '<div class="route-row"><span class="dotc" style="background:' + M.dayColor(i) + '"></span><b>' + (r.dayNo ? 'Day ' + r.dayNo : '기간 밖') + ' · ' + esc(L.dateLabel(r.date)) + '</b>' +
@@ -430,7 +571,8 @@
   }
   function showPin(n) {
     var t = cur(), s = ui.stops[n]; if (!s) return;
-    ui.pin = n; stepLabel();
+    ui.pin = n; ui.planPin = null; stepLabel();
+    document.querySelectorAll('#tripMap .plan-pin').forEach(function (g) { g.classList.remove('on'); });
     document.querySelectorAll('#tripMap .pin').forEach(function (g) { g.classList.toggle('on', +g.dataset.stop === n); });
     var ps = s.stop.refs.filter(function (r) { return r.indexOf('p:') === 0; }).map(function (r) { return photoById(t, r.slice(2)); }).filter(Boolean);
     var es = s.stop.refs.filter(function (r) { return r.indexOf('e:') === 0; }).map(function (r) { return t.entries.filter(function (e) { return e.id === r.slice(2); })[0]; }).filter(Boolean);
@@ -755,7 +897,7 @@
   function buildPrint(t) {
     var s = L.tripStats(t), tot = s.expense;
     var routes = L.tripRoutes(t);
-    var map = M.trip({ trip: t, routes: routes, day: '', thumbs: false, width: 960 }).svg;
+    var map = M.trip({ trip: t, routes: routes, plans: L.planRoutes(t), day: '', thumbs: false, width: 960 }).svg;
     var groups = {}; L.groupByDay(t.photos.filter(function (p) { return !L.needsDate(t, p); })).forEach(function (g) { groups[g.date] = g.photos; });
     var days = dayDates(t).map(function (d) {
       var n = L.dayNo(t, d);
@@ -776,12 +918,28 @@
       ' · ' + t.countries.map(function (id) { return esc(L.countryName(id, id)); }).join(', ') + (t.cities.length ? ' · ' + t.cities.map(esc).join(', ') : '') + '</p>' +
       '<p class="p-meta">사진 ' + s.photos + '장 · 일기 ' + s.written + '편 · 사진으로 잰 이동 ' + s.km + 'km · 경비 ' + L.won(tot.total) + '</p>' +
       (t.report ? '<h2>여행 리포트</h2><div class="p-report">' + esc(t.report) + '</div>' : '') +
-      '<h2>동선</h2>' + map + days +
+      printPlans(t) + '<h2>동선</h2>' + (L.planRoutes(t).length ? '<p class="p-meta">색 실선·번호 = 사진으로 그린 실제 동선, 검은 점선·네모 = 계획한 일정</p>' : '') + map + days +
       (cats.length ? '<h2>경비</h2><table><thead><tr><th>분류</th><th class="num">원 환산</th></tr></thead><tbody>' +
         cats.map(function (c) { return '<tr><td>' + esc(c) + '</td><td class="num">' + L.won(tot.byCategory[c]) + '</td></tr>'; }).join('') +
         '<tr><th>합계</th><th class="num">' + L.won(tot.total) + '</th></tr></tbody></table>' +
         '<p class="p-meta">환율(직접 입력): ' + Object.keys(t.rates).map(function (c) { return '1 ' + c + ' = ' + t.rates[c] + '원'; }).join(', ') + (tot.missing.length ? ' · 환율 없는 ' + tot.missing.join(', ') + ' 제외' : '') + '</p>' : '') +
       printSettle(t);
+  }
+  function printPlans(t) {
+    var days = L.plansByDay(t).filter(function (g) { return g.plans.length; });
+    if (!days.length) return '';
+    var pr = L.planProgress(t);
+    return '<h2>여행 일정</h2><p class="p-meta">일정 ' + pr.total + '개 · 확인 끝 ' + pr.done + '개</p>' +
+      '<table class="p-plan"><thead><tr><th>날짜</th><th>시각</th><th>종류</th><th>일정 · 장소</th><th>예약 번호 · 메모</th><th>확인</th></tr></thead><tbody>' +
+      days.map(function (g) {
+        return g.plans.map(function (p, i) {
+          var cost = L.planCost(t, p);
+          return '<tr><td>' + (i ? '' : (g.dayNo ? 'Day ' + g.dayNo + '<br>' : '') + esc(L.dateLabel(g.date))) + '</td><td>' + esc(planTime(p)) + '</td><td>' + esc(p.type) + '</td>' +
+            '<td>' + esc(p.title) + (p.place ? '<br><small>' + esc(p.place) + '</small>' : '') + '</td>' +
+            '<td>' + esc(p.booking || '') + (p.memo ? (p.booking ? '<br>' : '') + '<small>' + esc(p.memo) + '</small>' : '') +
+            (cost ? '<br><small>비용 ' + esc(L.comma(cost.expense.amount) + ' ' + cost.expense.currency) + '</small>' : '') + '</td><td>' + (p.done ? '✓' : '') + '</td></tr>';
+        }).join('');
+      }).join('') + '</tbody></table>';
   }
   function printSettle(t) {
     var ms = L.members(t); if (ms.length < 2 || !t.expenses.length) return '';
@@ -856,7 +1014,7 @@
     };
 
     document.body.addEventListener('click', function (ev) {
-      var el = ev.target.closest('[data-del-country],[data-del-city],[data-trip],[data-new-entry],[data-edit-entry],[data-help-entry],[data-del-photo],[data-set-date],[data-edit-x],[data-del-x],[data-goto-entry],[data-stop-btn],#tripMap [data-stop]');
+      var el = ev.target.closest('[data-del-country],[data-del-city],[data-trip],[data-new-entry],[data-edit-entry],[data-help-entry],[data-del-photo],[data-set-date],[data-edit-x],[data-del-x],[data-goto-entry],[data-stop-btn],#tripMap [data-stop],[data-new-plan],[data-edit-plan],[data-del-plan],[data-plan-map],[data-goto-plan],[data-city-hit],#tripMap [data-plan-pin]');
       if (!el) return;
       var t = cur(), d = el.dataset;
       if (d.delCountry) { t.countries = t.countries.filter(function (x) { return x !== d.delCountry; }); save(); renderTab(); }
@@ -886,7 +1044,49 @@
         toast('지출을 지웠어요.', function () { t.expenses.splice(k, 0, old); save(); renderTab(); });
       } else if (d.stopBtn != null) { showPin(+d.stopBtn); $('tripMap').scrollIntoView({ block: 'center', behavior: 'smooth' }); }
       else if (d.stop != null) showPin(+d.stop);
+      else if (d.planPin) showPlanPin(d.planPin);
+      else if (d.newPlan) { resetPlanForm(d.newPlan); $('pForm').scrollIntoView({ block: 'start', behavior: 'smooth' }); $('pTitle').focus({ preventScroll: true }); }
+      else if (d.editPlan || d.gotoPlan) { var ep = planById(t, d.editPlan || d.gotoPlan); if (!ep) return; if (d.gotoPlan) setTab('plan'); editPlan(ep); }
+      else if (d.planMap) { var mp = planById(t, d.planMap); if (!mp) return; ui.mapDay = mp.date; ui.pin = null; ui.planPin = mp.id; $('mPlans').checked = true; setTab('map'); }
+      else if (d.delPlan) deletePlan(d.delPlan);
+      else if (d.cityHit) {
+        var h = ui.cityHits && ui.cityHits[+d.cityHit]; if (!h) return;
+        ui.planPos = { lat: h.lat, lng: h.lng }; $('pPos').value = h.lat + ', ' + h.lng;
+        if (!$('pPlace').value.trim()) $('pPlace').value = h.name;
+        $('pCityHits').innerHTML = ''; showPlanPos();
+      }
     });
+    $('tripMap').addEventListener('keydown', function (ev) { var g = ev.target.closest('[data-plan-pin]'); if (g && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); showPlanPin(g.dataset.planPin); } });
+
+    // 여행 일정
+    $('pForm').addEventListener('submit', function (e) { e.preventDefault(); submitPlan(); });
+    $('pCancel').onclick = function () { resetPlanForm(); renderTab(); };
+    $('pDelete').onclick = function () { if (ui.planId) deletePlan(ui.planId); };
+    $('pExpense').addEventListener('change', function () { $('pNewCost').hidden = this.value !== '__new'; if (this.value === '__new') $('pAmount').focus(); });
+    $('planList').addEventListener('change', function (ev) {
+      var id = ev.target.dataset.planDone; if (!id) return;
+      var p = planById(cur(), id); if (!p) return;
+      p.done = ev.target.checked; save(); renderTab();
+      var again = document.querySelector('[data-plan-done="' + id + '"]'); if (again) again.focus();
+    });
+    $('pCityFind').onclick = function () {
+      var q = $('pPlace').value.split(/[·,]/)[0].trim();
+      if (!q) { $('pPlace').focus(); $('pPosErr').textContent = '장소 칸에 도시 이름을 먼저 적어 주세요(예: 오사카).'; return; }
+      if (!CITIES()) { $('pPosErr').textContent = '도시 목록을 아직 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요.'; return; }
+      ui.cityHits = L.citySearch(q, CITIES(), 6);
+      $('pPosErr').textContent = ui.cityHits.length ? '' : '「' + q + '」 도시를 찾지 못했어요. 인구 1만 5천 명 이상 도시만 있어요 — 좌표를 직접 넣어 주세요.';
+      $('pCityHits').innerHTML = ui.cityHits.map(function (h, i) {
+        return '<button type="button" class="btn tiny" data-city-hit="' + i + '">' + esc(h.name + ' (' + h.cc + (h.pop ? ', 인구 ' + L.comma(Math.round(h.pop / 1000)) + '천' : '') + ')') + '</button>';
+      }).join('');
+    };
+    $('pPos').addEventListener('change', function () {
+      var v = this.value.trim();
+      if (!v) { ui.planPos = null; showPlanPos(); return; }
+      var pos = L.parseLatLng(v);
+      if (pos) { ui.planPos = pos; showPlanPos(); } else $('pPosErr').textContent = '「위도, 경도」 모양으로 적어 주세요(예: 34.6655, 135.5010).';
+    });
+    $('pClearPos').onclick = function () { ui.planPos = null; $('pPos').value = ''; showPlanPos(); };
+    $('mPlans').addEventListener('change', function () { renderTab(); });
     $('tripMap').addEventListener('keydown', function (ev) { var g = ev.target.closest('[data-stop]'); if (g && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); showPin(+g.dataset.stop); } });
 
     // 앨범 보기 · 크게 보기
@@ -1063,7 +1263,7 @@
     db = saved && saved.schemaVersion === L.SCHEMA_VERSION && Array.isArray(saved.trips) ? saved : fresh();
     bind();
     if (cur()) { db.currentId = cur().id; fillTripForm(); loadThumbs(cur()); }
-    resetExpenseForm();
+    resetExpenseForm(); resetPlanForm();
     setTab('trip');
     St.persistent().then(function (ok) { if (!ok) toast('이 브라우저에서는 사진 미리보기를 이번 창에서만 보관해요(사생활 보호 모드 등).'); });
     // 도시 이름 자료가 늦게 오면 그때 한 번 다시 그린다

@@ -12,6 +12,8 @@
 --    각 레코드의 id → trip_id · entry_id · photo_id · expense_id
 --    start/end → start_date/end_date, text → body, date → entry_date/spent_on
 --    (2026-09-30) members → trip.members, paidBy → paid_by, split → split_among, place/placeDetail → photo.place/place_detail
+--    (2026-09-30 여행 일정) plans → plan 표: id → plan_id, type → plan_type, date → plan_date, start/end → start_time/end_time,
+--                 endDate → end_date, booking → booking_ref, expenseId → expense_id, done → done
 --
 --  표 목록
 --    trip      여행 — 이름, 기간, 나라(Natural Earth 숫자 코드), 도시, 환율(직접 입력), AI 리포트
@@ -19,13 +21,15 @@
 --    photo     사진 정보 — 파일 이름·크기, 찍은 시각(카메라 현지 시각), 좌표. 사진 파일 자체는 저장하지 않음
 --              (2단계에 private Storage 버킷을 쓰면 storage_path 에 경로를 적는다)
 --    expense   지출 — 날짜, 금액(원래 통화, 소수 둘째 자리), 통화, 분류
+--    plan      여행 일정(계획) — 종류(항공·숙소·관광·맛집·투어·기타), 이름, 날짜·시각, 장소·좌표, 예약 번호, 메모,
+--              연결한 지출(지출을 지우면 연결만 풀림), 확인 여부
 --  원 환산 합계·동선·방문 국가 목록은 입력에서 다시 계산되는 파생 데이터라 저장하지 않습니다.
 --
 --  권한 원칙 : 모든 행은 만든 사람(owner_id = auth.uid())만 보고 고칩니다.
 --              기록·사진·지출은 (owner_id, trip_id) 복합 외래키로 여행을 가리켜, 남의 여행에 행을 끼워 넣을 수 없게 합니다.
 --              사진이 붙는 기록도 (owner_id, trip_id, entry_id) 로 가리켜 다른 여행의 기록에 붙지 않게 합니다.
 --              여행을 지우면 종속 행도 함께 지우고, 기록을 지우면 사진은 남기고 연결만 풉니다.
---  한도      : 여행 200개, 여행 하나에 사진 2,000 · 기록 1,000 · 지출 2,000, 여행 기간 1년, 금액 1조 이하
+--  한도      : 여행 200개, 여행 하나에 사진 2,000 · 기록 1,000 · 지출 2,000 · 일정 500, 여행 기간 1년, 금액 1조 이하
 --  이 스키마는 수강생 본인 프로젝트 전제라 테이블 이름에 접두사를 붙이지 않았습니다.
 -- ============================================================================
 
@@ -146,6 +150,51 @@ alter table public.photo add column if not exists place text not null default ''
 alter table public.photo add column if not exists place_detail text not null default ''
   constraint photo_place_detail check (length(place_detail) <= 120);
 
+-- 2026-09-30 추가 — 여행 일정(계획). 일정이 가리키는 지출은 같은 여행의 것이어야 하므로
+-- expense 에 (owner_id, trip_id, expense_id) 유일 제약을 먼저 둔다(이미 있으면 건너뜀 — 재실행 안전).
+do $uq$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'expense_trip_uniq' and conrelid = 'public.expense'::regclass) then
+    alter table public.expense add constraint expense_trip_uniq unique (owner_id, trip_id, expense_id);
+  end if;
+end;
+$uq$;
+
+create table if not exists public.plan (
+  id           bigint generated always as identity primary key,
+  owner_id     uuid not null default auth.uid(),
+  trip_id      text not null,
+  plan_id      text not null,
+  plan_type    text not null default '관광' check (plan_type in ('항공', '숙소', '관광', '맛집', '투어', '기타')),
+  title        text not null check (length(trim(title)) > 0 and length(title) <= 60),
+  plan_date    date not null,
+  start_time   time,
+  end_date     date,                                  -- 비우면 같은 날. 숙소 체크아웃·다음 날 도착 비행
+  end_time     time,
+  place        text not null default '' check (length(place) <= 80),
+  lat          numeric(9, 6) check (lat between -90 and 90),
+  lng          numeric(9, 6) check (lng between -180 and 180),
+  booking_ref  text not null default '' check (length(booking_ref) <= 60),
+  memo         text not null default '' check (length(memo) <= 300),
+  expense_id   text,                                  -- 비우면 비용 연결 없음
+  done         boolean not null default false,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint plan_uniq unique (owner_id, plan_id),
+  constraint plan_pos check ((lat is null) = (lng is null)),
+  constraint plan_not_null_island check (not (lat = 0 and lng = 0)),
+  constraint plan_span check (end_date is null or (end_date >= plan_date and end_date - plan_date <= 31)),
+  -- 같은 날이면 끝 시각이 시작보다 빠를 수 없다(다음 날이면 end_date 를 적는다)
+  constraint plan_time_order check (
+    start_time is null or end_time is null or (end_date is not null and end_date > plan_date) or end_time >= start_time),
+  constraint plan_trip_fk foreign key (owner_id, trip_id)
+    references public.trip (owner_id, trip_id) on delete cascade on update cascade,
+  -- 지출을 지우면 일정은 남기고 expense_id 만 비운다(사진 ↔ 기록과 같은 규칙)
+  constraint plan_expense_fk foreign key (owner_id, trip_id, expense_id)
+    references public.expense (owner_id, trip_id, expense_id) on delete set null (expense_id) on update cascade
+);
+create index if not exists plan_trip_idx on public.plan (owner_id, trip_id, plan_date, start_time);
+
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거
 --
@@ -161,7 +210,7 @@ begin
 end;
 $fn$;
 
--- 행 수 한도 — 여행 200(사용자당), 사진 2,000 · 기록 1,000 · 지출 2,000(여행당)
+-- 행 수 한도 — 여행 200(사용자당), 사진 2,000 · 기록 1,000 · 지출 2,000 · 일정 500(여행당)
 create or replace function public.check_row_limit()
 returns trigger language plpgsql set search_path = public as $fn$
 declare n int; lim int;
@@ -170,7 +219,7 @@ begin
     select count(*) into n from public.trip where owner_id = new.owner_id;
     lim := 200;
   else
-    lim := case tg_table_name when 'photo' then 2000 when 'entry' then 1000 else 2000 end;
+    lim := case tg_table_name when 'photo' then 2000 when 'entry' then 1000 when 'plan' then 500 else 2000 end;
     execute format('select count(*) from public.%I where owner_id = $1 and trip_id = $2', tg_table_name)
       into n using new.owner_id, new.trip_id;
   end if;
@@ -184,7 +233,7 @@ $fn$;
 do $trg$
 declare t text;
 begin
-  foreach t in array array['trip', 'entry', 'photo', 'expense']
+  foreach t in array array['trip', 'entry', 'photo', 'expense', 'plan']
   loop
     execute format('drop trigger if exists %I on public.%I', t || '_updated_at', t);
     execute format('create trigger %I before update on public.%I for each row execute function public.set_updated_at()',
@@ -203,7 +252,7 @@ $trg$;
 do $rls$
 declare t text;
 begin
-  foreach t in array array['trip', 'entry', 'photo', 'expense']
+  foreach t in array array['trip', 'entry', 'photo', 'expense', 'plan']
   loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
@@ -227,8 +276,8 @@ $rls$;
 --    정책이 anon 을 막지만, 권한 자체도 끊어 두 겹으로 막는다.
 -- ----------------------------------------------------------------------------
 
-revoke all on public.trip, public.entry, public.photo, public.expense from anon;
-grant select, insert, update, delete on public.trip, public.entry, public.photo, public.expense to authenticated;
+revoke all on public.trip, public.entry, public.photo, public.expense, public.plan from anon;
+grant select, insert, update, delete on public.trip, public.entry, public.photo, public.expense, public.plan to authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 5. 함수 실행 권한
