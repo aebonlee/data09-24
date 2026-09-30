@@ -1,6 +1,8 @@
 /*
  * JOURNAL — 화면. 계산은 JLogic(js/logic.js), EXIF 는 JournalExif(js/exif.js), 지도 그림은 JMap(js/map.js).
  * 저장: 여행·기록·경비·사진 정보 = localStorage, 사진 미리보기 = IndexedDB (js/store.js).
+ * 도시 이름 자료(vendor/cities15000.js, 약 0.9MB)는 async 로 불러와, 다 오면 화면을 한 번 다시 그린다.
+ * HEIC 변환기(vendor/heic2any.min.js, 약 1.3MB)는 브라우저가 HEIC 를 못 열 때만 처음 한 번 불러온다.
  */
 (function () {
   'use strict';
@@ -10,7 +12,22 @@
 
   var db = null;                      // { schemaVersion, trips, currentId }
   var thumbs = {};                    // 사진 id → 미리보기 URL (IndexedDB 에서 읽어 둔 것)
-  var ui = { tab: 'trip', entryId: null, expenseId: null, mapDay: '', pin: null, lastCur: 'KRW', lastDate: '' };
+  var ui = { tab: 'trip', entryId: null, expenseId: null, mapDay: '', pin: null, lastCur: 'KRW', lastDate: '',
+    logView: 'diary', viewCur: 'KRW', lbList: [], lbIndex: 0, lbFrom: null, geoBusy: false };
+  function CITIES() { return window.JOURNAL_CITIES || null; }     // 아직 안 왔으면 null — 도시 이름 없이 그린다
+  function placeOf(p) { return L.placeName(p, CITIES()); }
+
+  // 일반 스크립트를 한 번만 불러온다(file:// 에서도 되는 방식)
+  var scriptJobs = {};
+  function loadScript(src) {
+    if (!scriptJobs[src]) scriptJobs[src] = new Promise(function (resolve, reject) {
+      var el = document.createElement('script');
+      el.src = src; el.onload = function () { resolve(); };
+      el.onerror = function () { delete scriptJobs[src]; reject(new Error(src + ' 를 불러오지 못했어요.')); };
+      document.head.appendChild(el);
+    });
+    return scriptJobs[src];
+  }
 
   // ------------------------------------------------------------ 저장
   function fresh() { return { schemaVersion: L.SCHEMA_VERSION, trips: [], currentId: '' }; }
@@ -78,7 +95,7 @@
     var t = cur();
     document.querySelectorAll('.tab').forEach(function (s) { s.hidden = !t || s.id !== 'tab-' + ui.tab; });
     if (!t) return;
-    ({ trip: renderTrip, log: renderLog, map: renderMap, money: renderMoney, export: renderExport })[ui.tab](t);
+    ({ trip: renderTrip, log: renderLog, map: renderMap, money: renderMoney, settle: renderSettle, export: renderExport })[ui.tab](t);
   }
   function switchTrip(id) {
     db.currentId = id; ui.entryId = null; ui.expenseId = null; ui.mapDay = ''; ui.pin = null;
@@ -148,11 +165,11 @@
     return Object.keys(set).sort();
   }
   function photoFigure(p) {
-    var url = thumbUrl(p), time = L.timeOf(L.photoStamp(p));
+    var url = thumbUrl(p), time = L.timeOf(L.photoStamp(p)), place = placeOf(p);
     return '<figure class="ph">' + (url ? '<img src="' + esc(url) + '" alt="' + esc(p.name) + '" loading="lazy">' : '<span class="noimg">' + esc(p.name) + '<br>(미리보기 없음)</span>') +
       (L.hasPos(p) ? '' : '<span class="nopos">위치 없음</span>') +
       '<button type="button" class="del" data-del-photo="' + esc(p.id) + '" aria-label="사진 ' + esc(p.name) + ' 지우기">지우기</button>' +
-      '<figcaption>' + esc(time || (p.dateSource === 'file' ? '파일 날짜' : '')) + (p.dateSource === 'file' ? ' · 파일 날짜' : '') + '</figcaption></figure>';
+      '<figcaption>' + esc([time || (p.dateSource === 'file' ? '파일 날짜' : ''), place].filter(Boolean).join(' · ')) + (p.dateSource === 'file' && time ? ' · 파일 날짜' : '') + '</figcaption></figure>';
   }
   function renderLog(t) {
     var groups = {};
@@ -184,6 +201,49 @@
     }
     $('dayList').innerHTML = html || '<p class="hint">아직 기록이 없어요. 사진을 불러오거나 「기록 직접 쓰기」를 눌러 주세요.</p>';
     $('dAuto').hidden = !St.getKey();
+    // 보기 방식: 기록(일기 중심) / 사진 크게 보기(앨범 중심)
+    var album = ui.logView === 'album';
+    document.querySelectorAll('[data-logview]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.logview === ui.logView)); });
+    $('dayList').hidden = album; $('gallery').hidden = !album;
+    if (album) renderGallery(t, groups);
+  }
+  // 사진 중심 앨범 — 날짜마다 큰 사진 격자, 누르면 크게 보기(앞뒤 넘기기)
+  function renderGallery(t, groups) {
+    var list = [], html = '';
+    dayDates(t).concat(groups[''] && groups[''].length ? [''] : []).forEach(function (d) {
+      var ps = groups[d] || [];
+      if (!ps.length) return;
+      var n = d ? L.dayNo(t, d) : 0, names = [];
+      ps.forEach(function (p) { var nm = placeOf(p); if (nm && names.indexOf(nm) < 0) names.push(nm); });
+      var entry = d ? L.entriesOn(t, d)[0] : null, title = entry ? (L.splitTitle(entry.text).title || '') : '';
+      html += '<section class="g-day"><h3>' + (d ? (n ? 'Day ' + n + ' · ' : '') + esc(L.dateLabel(d)) : '날짜를 확인할 사진') +
+        (names.length ? ' <span class="g-places">' + names.map(esc).join(' · ') + '</span>' : '') + '</h3>' +
+        (title ? '<p class="g-title">' + esc(title) + '</p>' : '') + '<div class="gallery">' +
+        ps.map(function (p) {
+          var i = list.length, url = thumbUrl(p); list.push(p);
+          return '<button type="button" class="g-item" data-lb="' + i + '" aria-label="' + esc(p.name) + ' 크게 보기">' +
+            (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : '<span class="noimg">' + esc(p.name) + '<br>(미리보기 없음)</span>') +
+            '<span class="g-cap">' + esc([L.timeOf(L.photoStamp(p)), placeOf(p)].filter(Boolean).join(' · ')) + '</span></button>';
+        }).join('') + '</div></section>';
+    });
+    ui.lbList = list;
+    $('gallery').innerHTML = html || '<p class="hint">아직 사진이 없어요. 왼쪽 「사진 고르기」로 불러와 주세요.</p>';
+  }
+  function openLightbox(i, from) {
+    if (!ui.lbList.length) return;
+    ui.lbIndex = (i + ui.lbList.length) % ui.lbList.length;
+    if (from) ui.lbFrom = from;
+    var t = cur(), p = ui.lbList[ui.lbIndex], url = thumbUrl(p), d = L.photoDate(p), n = d ? L.dayNo(t, d) : 0;
+    $('lbImg').src = url || ''; $('lbImg').alt = p.name; $('lbImg').hidden = !url;
+    $('lbCap').textContent = [(n ? 'Day ' + n + ' · ' : '') + (d ? L.dateLabel(d) : '날짜 없음'), L.timeOf(L.photoStamp(p)), placeOf(p), p.name,
+      (ui.lbIndex + 1) + ' / ' + ui.lbList.length].filter(Boolean).join(' · ');
+    $('lightbox').hidden = false;
+    $('lbClose').focus();
+  }
+  function closeLightbox() {
+    $('lightbox').hidden = true; $('lbImg').src = '';
+    if (ui.lbFrom && document.body.contains(ui.lbFrom)) ui.lbFrom.focus();
+    ui.lbFrom = null;
   }
 
   // 사진 불러오기 — 파일마다 EXIF 읽기 → 미리보기 만들기 → 여행에 더하기
@@ -204,11 +264,21 @@
       img.src = url;
     });
   }
+  // HEIC 미리보기 — 사파리는 직접 연다(위 makeThumb). 못 열면 heic2any 를 한 번 불러와 JPEG 로 바꾼 뒤 줄인다.
+  function heicThumb(file) {
+    return loadScript('vendor/heic2any.min.js').then(function () {
+      if (typeof window.heic2any !== 'function') throw new Error('변환기 없음');
+      return window.heic2any({ blob: file, toType: 'image/jpeg', quality: 0.8 });
+    }).then(function (out) { return makeThumb(Array.isArray(out) ? out[0] : out); }).catch(function () { return ''; });
+  }
+  function thumbFor(file, ex) {
+    return makeThumb(file).then(function (u) { return u || (ex && ex.format === 'heic' ? heicThumb(file) : ''); });
+  }
   function importPhotos(files) {
     var t = cur(); if (!t || !files.length) return;
     var box = $('importResult'); box.hidden = false; box.className = 'note';
     var have = {}; t.photos.forEach(function (p) { have[L.photoKey(p)] = 1; });
-    var res = { added: 0, dated: 0, located: 0, fileDated: 0, dup: 0, notJpeg: 0, over: 0 };
+    var res = { added: 0, dated: 0, located: 0, fileDated: 0, dup: 0, notJpeg: 0, over: 0, heic: 0, noThumb: 0 };
     var list = Array.prototype.slice.call(files), i = 0;
     function next() {
       if (i >= list.length) return finish();
@@ -218,6 +288,7 @@
       f.arrayBuffer().then(function (buf) {
         var ex = X.parse(buf);
         if (!ex) res.notJpeg++;
+        else if (ex.format === 'heic') res.heic++;
         var p = { id: L.uid('p'), name: f.name, size: f.size, takenAt: ex ? ex.takenAt : '', fileTime: '', dateSource: 'exif',
           lat: ex ? ex.lat : null, lng: ex ? ex.lng : null, offset: ex ? ex.offset : '', entryId: '' };
         if (!p.takenAt) {
@@ -228,8 +299,9 @@
         if (have[L.photoKey(p)]) { res.dup++; return next(); }
         have[L.photoKey(p)] = 1;
         if (L.hasPos(p)) res.located++;
-        return makeThumb(f).then(function (u) {
-          if (u) { thumbs[p.id] = u; St.putThumb(p.id, u); }
+        if (ex && ex.format === 'heic') box.textContent = '사진 읽는 중… ' + i + ' / ' + list.length + ' (HEIC 미리보기 만드는 중)';
+        return thumbFor(f, ex).then(function (u) {
+          if (u) { thumbs[p.id] = u; St.putThumb(p.id, u); } else res.noThumb++;
           t.photos.push(p); res.added++;
           next();
         });
@@ -240,16 +312,20 @@
       var filled = false;
       if (range && !t.start && !t.end) { t.start = range.start; t.end = range.end; filled = true; fillTripForm(); }
       var added = L.addCountriesFromPhotos(t, WORLD);
+      var addedCities = CITIES() ? L.addCitiesFromPhotos(t, CITIES()) : [];
       save();
       var days = L.groupByDay(t.photos.filter(function (p) { return !L.needsDate(t, p); })).filter(function (g) { return g.date; }).length;
       var check = t.photos.filter(function (p) { return L.needsDate(t, p); }).length;
       box.innerHTML = '사진 <b>' + res.added + '장</b>을 더했어요 — 찍은 날짜 ' + res.dated + '장, 위치 ' + res.located + '장' +
         (res.fileDated ? ', 날짜를 파일에서 짐작 ' + res.fileDated + '장' : '') + '. 모두 ' + days + '일로 묶였어요.' + (check ? ' 날짜를 확인할 사진이 ' + check + '장 있어요.' : '') +
         (res.dup ? '<br>이미 있는 사진 ' + res.dup + '장은 건너뛰었어요.' : '') +
-        (res.notJpeg ? '<br>JPEG 가 아니어서 날짜·위치를 읽지 못한 파일 ' + res.notJpeg + '개(HEIC 등).' : '') +
+        (res.heic ? '<br>아이폰 HEIC 사진 ' + res.heic + '장의 날짜·위치를 읽었어요.' : '') +
+        (res.noThumb ? '<br>미리보기를 만들지 못한 사진 ' + res.noThumb + '장 — 날짜·위치는 그대로 쓰고, 앨범에는 파일 이름으로 보여요.' : '') +
+        (res.notJpeg ? '<br>JPEG·HEIC 가 아니어서 날짜·위치를 읽지 못한 파일 ' + res.notJpeg + '개(PNG·동영상 등).' : '') +
         (res.over ? '<br>한 여행의 사진 한도(' + L.LIMITS.photosPerTrip + '장)를 넘은 ' + res.over + '장은 넣지 않았어요.' : '') +
         (filled ? '<br>여행 기간을 사진 날짜(' + range.start + ' ~ ' + range.end + ')로 채웠어요.' : '') +
         (added.length ? '<br>사진 위치에서 찾은 나라를 더했어요: ' + added.map(esc).join(', ') : '') +
+        (addedCities.length ? '<br>가까운 도시를 더했어요: ' + addedCities.map(esc).join(', ') + ' (여행 화면에서 뺄 수 있어요)' : '') +
         '<br>「사진으로 날짜별 기록 만들기」를 누르면 날마다 기록이 생겨요.';
       $('photoInput').value = '';
       renderTab();
@@ -275,8 +351,8 @@
   function showPos() {
     var la = $('eDate').dataset.lat, ln = $('eDate').dataset.lng;
     if (la !== '' && ln !== '') {
-      var c = L.countryAt(+la, +ln, WORLD);
-      $('ePos').textContent = '위치: ' + (+la).toFixed(4) + ', ' + (+ln).toFixed(4) + (c ? ' (' + c.ko + ')' : '') + ' — 사진에서 가져왔어요.';
+      var c = L.countryAt(+la, +ln, WORLD), city = L.cityAt(+la, +ln, CITIES());
+      $('ePos').textContent = '위치: ' + (+la).toFixed(4) + ', ' + (+ln).toFixed(4) + ' (' + [city ? city.name : '', c ? c.ko : ''].filter(Boolean).join(', ') + ') — 사진에서 가져왔어요.';
       $('eClearPos').hidden = false;
     } else { $('ePos').textContent = '위치: 없음 (사진으로 만든 기록은 첫 사진 위치를 씁니다)'; $('eClearPos').hidden = true; }
   }
@@ -323,27 +399,47 @@
       routes.filter(function (r) { return !ui.mapDay || r.date === ui.mapDay; }).map(function (r, i) {
         return '<span><span class="sw" style="background:' + M.dayColor(routes.indexOf(r)) + '"></span>' + (r.dayNo ? 'Day ' + r.dayNo + ' ' : '') + esc(L.dateLabel(r.date)) + '</span>';
       }).join('');
-    if (ui.pin != null && ui.stops[ui.pin]) showPin(ui.pin); else $('pinInfo').innerHTML = '';
+    if (ui.pin != null && ui.stops[ui.pin]) showPin(ui.pin); else { $('pinInfo').innerHTML = ''; stepLabel(); }
+    var g = St.getGeo(); $('geoActs').hidden = !(g.on && g.key && ui.stops.length);
     $('routeList').innerHTML = routes.length ? routes.map(function (r, i) {
       return '<div class="route-row"><span class="dotc" style="background:' + M.dayColor(i) + '"></span><b>' + (r.dayNo ? 'Day ' + r.dayNo : '기간 밖') + ' · ' + esc(L.dateLabel(r.date)) + '</b>' +
         '<span>장소 ' + r.stops.length + '곳 · 직선거리 ' + (Math.round(r.meters / 100) / 10) + 'km</span>' +
         '<span class="stop-btns">' + r.stops.map(function (s, k) {
           // 핀이 겹쳐 누르기 어려운 곳도 여기서 고를 수 있게 — 지도에 그려진 순서(ui.stops)의 번호를 찾아 둔다
           var n = ui.stops.findIndex(function (x) { return x.stop === s; });
-          return n < 0 ? esc(L.timeOf(s.at) || '시각 없음') : '<button type="button" class="btn tiny" data-stop-btn="' + n + '">' + (k + 1) + '. ' + esc(L.timeOf(s.at) || '시각 없음') + '</button>';
+          var nm = stopName(t, s), label = (k + 1) + '. ' + (L.timeOf(s.at) || '시각 없음') + (nm ? ' ' + nm : '');
+          return n < 0 ? esc(label) : '<button type="button" class="btn tiny" data-stop-btn="' + n + '">' + esc(label) + '</button>';
         }).join(' ') + '</span></div>';
     }).join('') : '<p class="hint">위치가 있는 사진이나 좌표가 있는 기록이 없어요.</p>';
   }
+  // 장소 이름: 그 점의 사진 중 외부 API 이름이 있으면 그것, 없으면 가까운 도시
+  function stopName(t, stop) {
+    var ps = stop.refs.filter(function (r) { return r.indexOf('p:') === 0; }).map(function (r) { return photoById(t, r.slice(2)); }).filter(Boolean);
+    var api = ps.filter(function (p) { return p.place; })[0];
+    return api ? api.place : L.placeName({ lat: stop.lat, lng: stop.lng }, CITIES());
+  }
+  function stepLabel() {
+    var n = ui.stops ? ui.stops.length : 0;
+    $('mStep').textContent = n ? (ui.pin != null ? (ui.pin + 1) + ' / ' + n + '번째 장소' : '장소 ' + n + '곳 — 「다음 장소」로 따라가 보세요') : '';
+    $('mPrev').disabled = $('mNext').disabled = !n;
+  }
+  function stepPin(k) {
+    if (!ui.stops || !ui.stops.length) return;
+    var n = ui.pin == null ? (k > 0 ? 0 : ui.stops.length - 1) : (ui.pin + k + ui.stops.length) % ui.stops.length;
+    showPin(n);
+  }
   function showPin(n) {
     var t = cur(), s = ui.stops[n]; if (!s) return;
-    ui.pin = n;
+    ui.pin = n; stepLabel();
     document.querySelectorAll('#tripMap .pin').forEach(function (g) { g.classList.toggle('on', +g.dataset.stop === n); });
     var ps = s.stop.refs.filter(function (r) { return r.indexOf('p:') === 0; }).map(function (r) { return photoById(t, r.slice(2)); }).filter(Boolean);
     var es = s.stop.refs.filter(function (r) { return r.indexOf('e:') === 0; }).map(function (r) { return t.entries.filter(function (e) { return e.id === r.slice(2); })[0]; }).filter(Boolean);
     var entry = es[0] || (ps[0] && t.entries.filter(function (e) { return e.id === ps[0].entryId; })[0]);
     var c = L.countryAt(s.stop.lat, s.stop.lng, WORLD);
     var img = ps.map(function (p) { return thumbUrl(p) ? '<img src="' + esc(thumbUrl(p)) + '" alt="' + esc(p.name) + '">' : ''; }).join('');
-    $('pinInfo').innerHTML = '<div class="pin-card">' + img + '<div class="txt"><b>' + (s.dayNo ? 'Day ' + s.dayNo + ' · ' : '') + s.order + '번째 장소</b>' +
+    var nm = stopName(t, s.stop), api = ps.filter(function (p) { return p.place; })[0];
+    $('pinInfo').innerHTML = '<div class="pin-card">' + img + '<div class="txt"><b>' + (s.dayNo ? 'Day ' + s.dayNo + ' · ' : '') + s.order + '번째 장소' + (nm ? ' · ' + esc(nm) : '') + '</b>' +
+      (api && api.placeDetail ? '<p class="small">' + esc(api.placeDetail) + ' (외부 지도 API)</p>' : '') +
       '<p class="small">' + esc(L.dateLabel(s.date)) + (L.timeOf(s.stop.at) ? ' ' + L.timeOf(s.stop.at) : '') + ' · ' + s.stop.lat.toFixed(4) + ', ' + s.stop.lng.toFixed(4) + (c ? ' (' + esc(c.ko) + ')' : '') + '</p>' +
       (ps.length ? '<p class="small">사진 ' + ps.length + '장: ' + ps.map(function (p) { return esc(p.name); }).join(', ') + '</p>' : '') +
       (entry ? '<p>' + esc(entry.place || '') + '</p><button type="button" class="btn small" data-goto-entry="' + esc(entry.id) + '">이날 기록 보기</button>' : '') + '</div></div>';
@@ -353,6 +449,7 @@
   function resetExpenseForm() {
     ui.expenseId = null; var t = cur();
     $('xAmount').value = ''; $('xMemo').value = ''; $('xAmountErr').textContent = ''; $('xDateErr').textContent = '';
+    fillWho(t, null);
     $('xDate').value = ui.lastDate || (t && t.start) || new Date().toISOString().slice(0, 10);
     $('xSubmit').textContent = '추가'; $('xCancel').hidden = true; xPreview();
   }
@@ -363,6 +460,52 @@
     var h = L.toHome({ amount: a, currency: c }, t.rates, t.home);
     $('xPreview').textContent = c === t.home ? '' : (h.ok ? '= ' + L.won(h.value) + ' (1 ' + c + ' = ' + t.rates[c] + '원)' : c + ' 환율을 아래 「환율」에 적으면 원으로 환산해요.');
   }
+  // 보기 통화 고르기(원·USD·JPY·EUR) — 경비 한눈에·정산이 같은 값을 쓴다
+  function fillViewCur(sel) {
+    if (!sel.options.length) sel.innerHTML = ['KRW'].concat(L.VIEW_CURRENCIES).map(function (c) { return '<option value="' + c + '">' + c + '</option>'; }).join('');
+    sel.value = ui.viewCur;
+  }
+  // 보기 통화로 쓴 금액. 그 통화 환율이 없으면 원으로 쓰고 알려 준다
+  function vmoney(t, won) {
+    var s = L.money(won, ui.viewCur, t.rates, t.home);
+    return s || L.money(won, 'KRW', t.rates, t.home);
+  }
+  function viewCurNote(t) {
+    return ui.viewCur !== 'KRW' && !(t.rates[ui.viewCur] > 0) ? '<p class="small missing">' + ui.viewCur + ' 환율이 없어 원으로 보여 드려요. 「경비 → 환율」에 1 ' + ui.viewCur + ' = ?원 을 적어 주세요.</p>' : '';
+  }
+  // 지출 적기의 「낸 사람·나눌 사람」 — 함께 간 사람이 두 명 이상일 때만 보인다
+  function fillWho(t, x) {
+    if (!t) return;
+    var ms = L.members(t);
+    $('xWho').hidden = ms.length < 2;
+    if (ms.length < 2) return;
+    var payer = x ? L.payerOf(x, ms) : ($('xPaidBy').value && ms.some(function (m) { return m.id === $('xPaidBy').value; }) ? $('xPaidBy').value : ms[0].id);
+    $('xPaidBy').innerHTML = ms.map(function (m) { return '<option value="' + esc(m.id) + '">' + esc(m.name) + '</option>'; }).join('');
+    $('xPaidBy').value = payer;
+    var sel = x ? L.sharersOf(x, ms) : ms.map(function (m) { return m.id; });
+    $('xSplit').innerHTML = ms.map(function (m) {
+      return '<label class="check"><input type="checkbox" value="' + esc(m.id) + '"' + (sel.indexOf(m.id) >= 0 ? ' checked' : '') + '> ' + esc(m.name) + '</label>';
+    }).join('');
+  }
+  function renderDash(t, tot) {
+    fillViewCur($('viewCur'));
+    var days = L.nightsDays(t).days || Object.keys(tot.byDay).filter(Boolean).length || 1;
+    var cats = Object.keys(tot.byCategory).sort(function (a, b) { return tot.byCategory[b] - tot.byCategory[a]; });
+    var eq = L.equivalents(tot.total, t.rates, t.home);
+    var tiles = [
+      [vmoney(t, tot.total), '총 경비' + (ui.viewCur !== 'KRW' && t.rates[ui.viewCur] > 0 ? ' (' + L.won(tot.total) + ')' : '')],
+      [vmoney(t, Math.round(tot.total / days)), '하루 평균 (' + days + '일)'],
+      [cats.length ? cats[0] : '-', cats.length ? '가장 많이 쓴 곳 ' + Math.round(tot.byCategory[cats[0]] / (tot.total || 1) * 100) + '%' : '가장 많이 쓴 곳'],
+      [tot.count + '건', '지출' + (tot.excluded ? ' (환율 없어 뺀 ' + tot.excluded + '건)' : '')]
+    ];
+    $('xDash').innerHTML = '<div class="tiles">' + tiles.map(function (x) { return '<div class="tile"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join('') + '</div>' +
+      '<p class="eq">' + L.won(tot.total) + eq.map(function (e) { return ' <span>≈ ' + (e.text ? esc(e.text) : '<span class="missing">' + e.cur + ' 환율 없음</span>') + '</span>'; }).join('') + '</p>' +
+      (cats.length ? '<div class="stack" aria-label="분류별 비율">' + cats.map(function (c, i) {
+        return '<i style="width:' + (tot.byCategory[c] / (tot.total || 1) * 100).toFixed(2) + '%;background:' + M.dayColor(i) + '" title="' + esc(c) + '"></i>';
+      }).join('') + '</div><p class="stack-legend">' + cats.map(function (c, i) {
+        return '<span><span class="sw" style="background:' + M.dayColor(i) + '"></span>' + esc(c) + ' ' + Math.round(tot.byCategory[c] / (tot.total || 1) * 100) + '%</span>';
+      }).join('') + '</p>' : '') + viewCurNote(t);
+  }
   function renderMoney(t) {
     if (!$('xCat').options.length) {
       $('xCat').innerHTML = L.EXPENSE_CATEGORIES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
@@ -370,8 +513,11 @@
       $('xCur').value = ui.lastCur;
     }
     var tot = L.expenseTotals(t.expenses, t.rates, t.home);
-    // 환율: 이 여행에서 쓴 외화 + 지금 고른 통화
+    renderDash(t, tot);
+    if (!ui.expenseId && document.activeElement && !$('xForm').contains(document.activeElement)) fillWho(t, null);
+    // 환율: 이 여행에서 쓴 외화 + 지금 고른 통화 + 표시용 USD·JPY·EUR
     var curs = {};
+    L.VIEW_CURRENCIES.forEach(function (c) { if (c !== t.home) curs[c] = 1; });
     t.expenses.forEach(function (x) { if (x.currency !== t.home) curs[x.currency] = 1; });
     Object.keys(t.rates).forEach(function (c) { curs[c] = 1; });
     if ($('xCur').value !== t.home) curs[$('xCur').value] = 1;
@@ -379,7 +525,7 @@
       var miss = tot.missing.indexOf(c) >= 0;
       return '<div class="rate-row"><label class="inline-label" for="rate-' + c + '">1 ' + c + ' =</label>' +
         '<input id="rate-' + c + '" type="text" inputmode="decimal" data-rate="' + c + '" value="' + (t.rates[c] || '') + '" placeholder="예: 9.12"><span>원</span>' +
-        (miss ? '<span class="missing">환율이 없어 합계에서 빠졌어요</span>' : '') + '</div>';
+        (miss ? '<span class="missing">환율이 없어 합계에서 빠졌어요</span>' : (L.VIEW_CURRENCIES.indexOf(c) >= 0 && !t.expenses.some(function (x) { return x.currency === c; }) ? '<span class="small">표시용</span>' : '')) + '</div>';
     }).join('') || '<p class="hint">외화 지출을 적으면 여기에 환율 칸이 생겨요.</p>';
     var cats = Object.keys(tot.byCategory).sort(function (a, b) { return tot.byCategory[b] - tot.byCategory[a]; });
     var max = cats.length ? tot.byCategory[cats[0]] : 1;
@@ -395,10 +541,13 @@
         return '<tr><td>' + (d ? (n ? 'Day ' + n + ' · ' : '') + esc(L.dateLabel(d)) : '날짜 없음') + '</td><td class="num">' + L.won(tot.byDay[d]) + '</td></tr>';
       }).join('') + '</tbody></table></div>' : '');
     var rows = t.expenses.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    var ms = L.members(t), multi = ms.length > 1;
+    var nameOf = function (id) { var m = ms.filter(function (y) { return y.id === id; })[0]; return m ? m.name : ''; };
     $('xList').innerHTML = rows.length ? '<div class="table-wrap"><table><thead><tr><th>날짜</th><th>내용</th><th class="num">금액</th><th class="num">원 환산</th><th></th></tr></thead><tbody>' +
       rows.map(function (x) {
         var h = L.toHome(x, t.rates, t.home);
-        return '<tr class="x-row"><td class="num">' + esc(x.date.slice(5)) + '</td><td>' + esc(x.category) + (x.memo ? '<br><span class="small">' + esc(x.memo) + '</span>' : '') + '</td>' +
+        return '<tr class="x-row"><td class="num">' + esc(x.date.slice(5)) + '</td><td>' + esc(x.category) + (x.memo ? '<br><span class="small">' + esc(x.memo) + '</span>' : '') +
+          (multi ? '<br><span class="small">' + esc(nameOf(L.payerOf(x, ms))) + ' 냄</span>' : '') + '</td>' +
           '<td class="num">' + L.comma(x.amount) + ' ' + x.currency + '</td><td class="num">' + (h.ok ? L.won(h.value) : '환율 없음') + '</td>' +
           '<td class="num"><button type="button" class="btn tiny" data-edit-x="' + esc(x.id) + '">고치기</button><button type="button" class="btn tiny" data-del-x="' + esc(x.id) + '">지우기</button></td></tr>';
       }).join('') + '</tbody></table></div>' : '<p class="hint">아직 지출이 없어요.</p>';
@@ -407,6 +556,17 @@
     var t = cur();
     var x = { id: ui.expenseId || L.uid('x'), date: $('xDate').value, amount: L.parseAmount($('xAmount').value),
       currency: $('xCur').value, category: $('xCat').value, memo: $('xMemo').value.trim() };
+    var ms = L.members(t);
+    if (ms.length > 1) {
+      x.paidBy = $('xPaidBy').value;
+      var sel = Array.prototype.map.call($('xSplit').querySelectorAll('input:checked'), function (c) { return c.value; });
+      if (!sel.length) { toast('나눌 사람을 한 명 이상 골라 주세요.'); return; }
+      if (sel.length < ms.length) x.split = sel;
+    } else {
+      var old = t.expenses.filter(function (y) { return y.id === x.id; })[0];   // 한 사람일 때 고쳐도 예전 정산 정보는 둔다
+      if (old && old.paidBy) x.paidBy = old.paidBy;
+      if (old && old.split) x.split = old.split;
+    }
     var e = L.validExpense(x);
     $('xAmountErr').textContent = e.amount || ''; $('xDateErr').textContent = e.date || '';
     if (!L.ok(e)) return;
@@ -421,9 +581,107 @@
     $('xAmount').focus();
   }
 
-  // ------------------------------------------------------------ 5. 요약·내보내기
+  // ------------------------------------------------------------ 5. 정산
+  function renderSettle(t) {
+    var ms = L.members(t), st = L.settle(t);
+    fillViewCur($('sViewCur'));
+    $('sMembers').innerHTML = ms.map(function (m, i) {
+      return '<span class="chip">' + esc(m.name) + (i === 0 ? ' <span class="small">(기본으로 낸 사람)</span>' : '') +
+        '<button type="button" data-ren-member="' + esc(m.id) + '" aria-label="' + esc(m.name) + ' 이름 바꾸기">이름</button>' +
+        (ms.length > 1 ? '<button type="button" data-del-member="' + esc(m.id) + '" aria-label="' + esc(m.name) + ' 빼기">빼기</button>' : '') + '</span>';
+    }).join('');
+    var name = function (id) { var m = ms.filter(function (x) { return x.id === id; })[0]; return m ? m.name : '?'; };
+    var excl = st.excluded.length ? '<p class="small missing">환율이 없어 정산에서 뺀 지출 ' + st.excluded.length + '건 — 「경비 → 환율」에 적으면 들어가요.</p>' : '';
+    if (ms.length < 2) {
+      $('sTransfers').innerHTML = '<p class="hint">지금은 혼자 간 여행이에요. 왼쪽 위 「함께 간 사람」에 이름을 더하면 정산이 시작돼요.</p>';
+      $('sPeople').innerHTML = ''; 
+    } else {
+      $('sTransfers').innerHTML = (st.transfers && st.transfers.length ?
+        '<ol class="transfers">' + st.transfers.map(function (x) {
+          return '<li><b>' + esc(name(x.from)) + '</b> → <b>' + esc(name(x.to)) + '</b><span class="amt">' + esc(vmoney(t, x.won)) + '</span>' +
+            (ui.viewCur !== 'KRW' && t.rates[ui.viewCur] > 0 ? '<span class="small">' + L.won(x.won) + '</span>' : '') + '</li>';
+        }).join('') + '</ol><p class="small">보낼 횟수가 가장 적은 방법이에요(' + st.transfers.length + '번).</p>' :
+        '<p class="hint">서로 주고받을 돈이 없어요.</p>') + excl + viewCurNote(t);
+      $('sPeople').innerHTML = '<h3>사람별</h3><div class="table-wrap"><table><thead><tr><th>이름</th><th class="num">낸 돈</th><th class="num">부담할 몫</th><th class="num">받을(+) / 낼(−)</th></tr></thead><tbody>' +
+        ms.map(function (m) {
+          var n = st.net[m.id];
+          return '<tr><td>' + esc(m.name) + '</td><td class="num">' + esc(vmoney(t, st.paid[m.id])) + '</td><td class="num">' + esc(vmoney(t, st.owed[m.id])) + '</td>' +
+            '<td class="num ' + (n > 0 ? 'pos' : n < 0 ? 'neg' : '') + '">' + (n > 0 ? '+' : '') + esc(vmoney(t, n)) + '</td></tr>';
+        }).join('') + '<tr><th>합계</th><th class="num">' + esc(vmoney(t, st.total)) + '</th><th class="num">' + esc(vmoney(t, st.total)) + '</th><th></th></tr></tbody></table></div>';
+    }
+    var byId = {}; st.items.forEach(function (it) { byId[it.id] = it; });
+    var rows = t.expenses.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    $('sItems').innerHTML = rows.length ? rows.map(function (x) {
+      var it = byId[x.id];
+      var head = '<div class="st-head"><b>' + esc(x.date.slice(5).replace('-', '/')) + ' · ' + esc(x.category) + (x.memo ? ' · ' + esc(x.memo) + '' : '') + '</b>' +
+        '<span>' + (it ? esc(vmoney(t, it.won)) : '환율 없음') + (x.currency !== t.home ? ' <span class="small">(' + L.comma(x.amount) + ' ' + x.currency + ')</span>' : '') + '</span></div>';
+      if (ms.length < 2) return '<div class="st-item">' + head + '</div>';
+      var payer = L.payerOf(x, ms), who = L.sharersOf(x, ms);
+      return '<div class="st-item" data-st="' + esc(x.id) + '">' + head +
+        '<div class="st-row"><label class="inline-label">낸 사람<select data-st-payer="' + esc(x.id) + '">' + ms.map(function (m) {
+          return '<option value="' + esc(m.id) + '"' + (m.id === payer ? ' selected' : '') + '>' + esc(m.name) + '</option>'; }).join('') + '</select></label></div>' +
+        '<div class="st-row checks" role="group" aria-label="나눌 사람">' + ms.map(function (m) {
+          return '<label class="check"><input type="checkbox" data-st-split="' + esc(x.id) + '" value="' + esc(m.id) + '"' + (who.indexOf(m.id) >= 0 ? ' checked' : '') + '> ' + esc(m.name) +
+            (it && it.shares[m.id] != null ? ' <span class="small">' + esc(vmoney(t, it.shares[m.id])) + '</span>' : '') + '</label>';
+        }).join('') + '</div></div>';
+    }).join('') : '<p class="hint">아직 지출이 없어요. 「경비」에서 적어 주세요.</p>';
+  }
+  function memberEdit(t) {
+    if (!t.members || !t.members.length) t.members = [{ id: L.ME.id, name: L.ME.name }];
+    return t.members;
+  }
+
+  // ------------------------------------------------------------ 외부 지도 API (선택)
+  function geoLookup(cfg, lat, lng) {
+    var rq = L.geoRequest(cfg.provider, lat, lng, cfg.key);
+    if (!rq) return Promise.reject(new Error('지도 API 를 골라 주세요.'));
+    return fetch(rq.url, { headers: rq.headers }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (j) {
+        if (!res.ok && !(j && (j.status || j.errorType))) throw new Error('지도 API 요청 실패 (HTTP ' + res.status + ')');
+        var r = L.geoParse(cfg.provider, j);
+        if (r.error) throw new Error(r.error);
+        return r;
+      });
+    }, function () { throw new Error('지도 API 에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.'); });
+  }
+  function geoFetchAll() {
+    var t = cur(), cfg = St.getGeo();
+    if (ui.geoBusy || !cfg.on || !cfg.key) return;
+    var todo = (ui.stops || []).filter(function (s) {
+      return s.stop.refs.some(function (r) { var p = r.indexOf('p:') === 0 && photoById(t, r.slice(2)); return p && !p.place; });
+    }).slice(0, 60);
+    if (!todo.length) { $('geoMsg').textContent = '이미 모든 장소에 이름이 있어요.'; return; }
+    ui.geoBusy = true; $('btnGeoFetch').disabled = true;
+    var done = 0, i = 0;
+    function next() {
+      if (i >= todo.length) return finish('');
+      var s = todo[i++];
+      $('geoMsg').textContent = '장소 이름 받는 중… ' + i + ' / ' + todo.length;
+      geoLookup(cfg, s.stop.lat, s.stop.lng).then(function (r) {
+        if (r.name) {
+          s.stop.refs.forEach(function (ref) { var p = ref.indexOf('p:') === 0 && photoById(t, ref.slice(2)); if (p) { p.place = r.name; p.placeDetail = r.detail || ''; } });
+          done++;
+        }
+        setTimeout(next, 150);
+      }, function (err) { finish(err.message); });
+    }
+    function finish(err) {
+      ui.geoBusy = false; $('btnGeoFetch').disabled = false; save(); renderTab();
+      $('geoMsg').textContent = (done ? '장소 ' + done + '곳의 이름을 받았어요.' : '') + (err ? ' ' + err : (done ? '' : ' 받은 이름이 없어요.'));
+    }
+    next();
+  }
+  function renderGeoSettings() {
+    var g = St.getGeo(), sel = $('geoProvider');
+    if (!sel.options.length) sel.innerHTML = Object.keys(L.GEO_PROVIDERS).map(function (k) { return '<option value="' + k + '">' + esc(L.GEO_PROVIDERS[k].label) + '</option>'; }).join('');
+    $('geoOn').checked = !!g.on; sel.value = g.provider || 'google';
+    $('geoKey').placeholder = g.key ? '저장된 키가 있어요(바꾸려면 새로 입력)' : L.GEO_PROVIDERS[sel.value].keyHint;
+  }
+
+  // ------------------------------------------------------------ 6. 요약·내보내기
   function renderExport(t) {
     $('rAuto').hidden = !St.getKey(); $('dAuto').hidden = !St.getKey();
+    renderGeoSettings();
     if (document.activeElement !== $('rText')) $('rText').value = t.report || '';
     drawCard(t);
   }
@@ -522,7 +780,15 @@
       (cats.length ? '<h2>경비</h2><table><thead><tr><th>분류</th><th class="num">원 환산</th></tr></thead><tbody>' +
         cats.map(function (c) { return '<tr><td>' + esc(c) + '</td><td class="num">' + L.won(tot.byCategory[c]) + '</td></tr>'; }).join('') +
         '<tr><th>합계</th><th class="num">' + L.won(tot.total) + '</th></tr></tbody></table>' +
-        '<p class="p-meta">환율(직접 입력): ' + Object.keys(t.rates).map(function (c) { return '1 ' + c + ' = ' + t.rates[c] + '원'; }).join(', ') + (tot.missing.length ? ' · 환율 없는 ' + tot.missing.join(', ') + ' 제외' : '') + '</p>' : '');
+        '<p class="p-meta">환율(직접 입력): ' + Object.keys(t.rates).map(function (c) { return '1 ' + c + ' = ' + t.rates[c] + '원'; }).join(', ') + (tot.missing.length ? ' · 환율 없는 ' + tot.missing.join(', ') + ' 제외' : '') + '</p>' : '') +
+      printSettle(t);
+  }
+  function printSettle(t) {
+    var ms = L.members(t); if (ms.length < 2 || !t.expenses.length) return '';
+    var st = L.settle(t), name = function (id) { var m = ms.filter(function (x) { return x.id === id; })[0]; return m ? m.name : '?'; };
+    return '<h2>정산</h2><table><thead><tr><th>이름</th><th class="num">낸 돈</th><th class="num">부담할 몫</th><th class="num">받을(+) / 낼(−)</th></tr></thead><tbody>' +
+      ms.map(function (m) { return '<tr><td>' + esc(m.name) + '</td><td class="num">' + L.won(st.paid[m.id]) + '</td><td class="num">' + L.won(st.owed[m.id]) + '</td><td class="num">' + (st.net[m.id] > 0 ? '+' : '') + L.won(st.net[m.id]) + '</td></tr>'; }).join('') +
+      '</tbody></table>' + (st.transfers && st.transfers.length ? '<p class="p-meta">' + st.transfers.map(function (x) { return esc(name(x.from)) + ' → ' + esc(name(x.to)) + ' ' + L.won(x.won); }).join(' · ') + '</p>' : '');
   }
 
   // 백업
@@ -612,6 +878,7 @@
       } else if (d.editX) {
         var x = t.expenses.filter(function (y) { return y.id === d.editX; })[0]; if (!x) return;
         ui.expenseId = x.id; $('xDate').value = x.date; $('xAmount').value = x.amount; $('xCur').value = x.currency; $('xCat').value = x.category; $('xMemo').value = x.memo || '';
+        fillWho(t, x);
         $('xSubmit').textContent = '고친 내용 저장'; $('xCancel').hidden = false; xPreview(); $('xAmount').focus();
       } else if (d.delX) {
         var k = t.expenses.findIndex(function (y) { return y.id === d.delX; }), old = t.expenses[k];
@@ -622,10 +889,28 @@
     });
     $('tripMap').addEventListener('keydown', function (ev) { var g = ev.target.closest('[data-stop]'); if (g && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); showPin(+g.dataset.stop); } });
 
+    // 앨범 보기 · 크게 보기
+    document.querySelectorAll('[data-logview]').forEach(function (b) { b.addEventListener('click', function () { ui.logView = b.dataset.logview; renderTab(); }); });
+    $('gallery').addEventListener('click', function (ev) { var b = ev.target.closest('[data-lb]'); if (b) openLightbox(+b.dataset.lb, b); });
+    $('lbPrev').onclick = function () { openLightbox(ui.lbIndex - 1); };
+    $('lbNext').onclick = function () { openLightbox(ui.lbIndex + 1); };
+    $('lbClose').onclick = closeLightbox;
+    $('lightbox').addEventListener('click', function (ev) { if (ev.target === this) closeLightbox(); });
+    document.addEventListener('keydown', function (ev) {
+      if ($('lightbox').hidden) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); closeLightbox(); }
+      else if (ev.key === 'ArrowLeft') openLightbox(ui.lbIndex - 1);
+      else if (ev.key === 'ArrowRight') openLightbox(ui.lbIndex + 1);
+      else if (ev.key === 'Tab') {             // 창 안에서만 돌게
+        var f = [$('lbPrev'), $('lbNext'), $('lbClose')], k = f.indexOf(document.activeElement);
+        ev.preventDefault(); f[(k + (ev.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+      }
+    });
+
     // 사진
     $('photoInput').addEventListener('change', function () { importPhotos(this.files); });
     $('btnMakeEntries').onclick = function () {
-      var t = cur(), n = L.entriesFromPhotos(t, WORLD);
+      var t = cur(), n = L.entriesFromPhotos(t, WORLD, CITIES());
       save(); renderTab();
       toast(n ? '기록 ' + n + '편을 만들었어요. 「고치기」로 장소 이름과 일기를 적어 주세요.' : '새로 만들 날이 없어요(사진이 없거나 이미 기록이 있어요).');
     };
@@ -665,12 +950,71 @@
     // 지도
     $('mDay').addEventListener('change', function () { ui.mapDay = this.value; ui.pin = null; renderTab(); });
     $('mThumbs').addEventListener('change', function () { renderTab(); });
+    $('mPrev').onclick = function () { stepPin(-1); };
+    $('mNext').onclick = function () { stepPin(1); };
+    $('btnGeoFetch').onclick = geoFetchAll;
+
+    // 보기 통화 · 정산
+    ['viewCur', 'sViewCur'].forEach(function (id) { $(id).addEventListener('change', function () { ui.viewCur = this.value; renderTab(); }); });
+    function addMember() {
+      var t = cur(), nm = $('sName').value.trim(); if (!nm) { $('sName').focus(); return; }
+      var ms = memberEdit(t);
+      if (ms.length >= L.LIMITS.members) { toast('함께 간 사람은 ' + L.LIMITS.members + '명까지예요.'); return; }
+      if (ms.some(function (m) { return m.name === nm; })) { toast('같은 이름이 이미 있어요.'); return; }
+      ms.push({ id: L.uid('m'), name: nm.slice(0, 20) }); $('sName').value = ''; save(); renderTab(); $('sName').focus();
+    }
+    $('btnMemberAdd').onclick = addMember;
+    $('sName').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addMember(); } });
+    $('sMembers').addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-del-member],[data-ren-member]'); if (!b) return;
+      var t = cur(), ms = memberEdit(t);
+      if (b.dataset.renMember) {
+        var m = ms.filter(function (x) { return x.id === b.dataset.renMember; })[0], nm = m && prompt('새 이름', m.name);
+        if (nm && nm.trim()) { m.name = nm.trim().slice(0, 20); save(); renderTab(); }
+        return;
+      }
+      var id = b.dataset.delMember, used = t.expenses.filter(function (x) { return x.paidBy === id || (x.split || []).indexOf(id) >= 0; }).length;
+      if (used && !confirm('이 사람이 들어간 지출이 ' + used + '건 있어요. 빼면 그 지출은 첫 사람이 낸 것으로, 나머지 사람끼리 나누는 것으로 바뀌어요. 뺄까요?')) return;
+      t.members = ms.filter(function (x) { return x.id !== id; });
+      t.expenses.forEach(function (x) {
+        if (x.paidBy === id) delete x.paidBy;
+        if (x.split) { x.split = x.split.filter(function (y) { return y !== id; }); if (!x.split.length) delete x.split; }
+      });
+      if (t.members.length === 1 && t.members[0].id === L.ME.id && t.members[0].name === L.ME.name) t.members = [];
+      save(); renderTab();
+    });
+    $('sItems').addEventListener('change', function (ev) {
+      var el = ev.target, t = cur(), ms = L.members(t);
+      var id = el.dataset.stPayer || el.dataset.stSplit, x = t.expenses.filter(function (y) { return y.id === id; })[0]; if (!x) return;
+      if (el.dataset.stPayer) x.paidBy = el.value;
+      else {
+        var sel = Array.prototype.map.call(document.querySelectorAll('[data-st-split="' + id + '"]:checked'), function (c) { return c.value; });
+        if (!sel.length) { el.checked = true; toast('나눌 사람을 한 명 이상 골라 주세요.'); return; }
+        if (sel.length === ms.length) delete x.split; else x.split = sel;
+      }
+      save(); renderTab();
+      var again = document.querySelector('[data-st-payer="' + id + '"]'); if (again && el.dataset.stPayer) again.focus();
+    });
+
+    // 외부 지도 API 설정
+    $('geoProvider').addEventListener('change', function () { $('geoKey').placeholder = L.GEO_PROVIDERS[this.value].keyHint; });
+    $('btnGeoSave').onclick = function () {
+      var g = St.getGeo(), k = $('geoKey').value.trim();
+      var o = { on: $('geoOn').checked, provider: $('geoProvider').value, key: k || (g.provider === $('geoProvider').value ? g.key : '') };
+      if (o.on && !o.key) { $('geoSetMsg').textContent = '켜려면 API 키를 넣어 주세요.'; return; }
+      $('geoSetMsg').textContent = St.setGeo(o) ? (o.on ? '저장했어요. 「동선 지도」에서 「외부 지도 API 로 장소 이름 받기」를 눌러 주세요.' : '저장했어요(꺼짐 — 도시 이름만 씁니다).') : '저장하지 못했어요.';
+      $('geoKey').value = ''; renderTab();
+    };
+    $('btnGeoDel').onclick = function () { St.setGeo(null); $('geoSetMsg').textContent = '키를 지우고 껐어요.'; renderTab(); };
 
     // 경비
     $('xForm').addEventListener('submit', function (e) { e.preventDefault(); submitExpense(); });
     $('xCancel').onclick = function () { resetExpenseForm(); };
     $('xAmount').addEventListener('input', xPreview);
     $('xCur').addEventListener('change', function () { ui.lastCur = this.value; xPreview(); renderTab(); });
+    $('xSplit').addEventListener('change', function (ev) {
+      if (!this.querySelector('input:checked')) { ev.target.checked = true; toast('나눌 사람을 한 명 이상 골라 주세요.'); }
+    });
     $('rateList').addEventListener('input', function (ev) {
       var c = ev.target.dataset.rate; if (!c) return;
       var t = cur(), v = L.parseRate(ev.target.value);
@@ -722,6 +1066,8 @@
     resetExpenseForm();
     setTab('trip');
     St.persistent().then(function (ok) { if (!ok) toast('이 브라우저에서는 사진 미리보기를 이번 창에서만 보관해요(사생활 보호 모드 등).'); });
+    // 도시 이름 자료가 늦게 오면 그때 한 번 다시 그린다
+    if (!CITIES() && $('citiesScript')) $('citiesScript').addEventListener('load', function () { renderTab(); });
   }
   start();
 })();

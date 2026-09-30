@@ -1,0 +1,15 @@
+vendor/cities15000.js — 도시 이름 자료 출처와 라이선스
+
+GeoNames (https://www.geonames.org/) 의 공개 자료를 변환해 넣었습니다.
+  - cities15000.zip — 인구 1만 5천 명 이상 도시(이름·좌표·나라·인구)
+  - alternateNamesV2.zip — 도시의 한국어 이름(ko)
+  https://download.geonames.org/export/dump/  (2026-09-30 내려받음)
+
+라이선스: Creative Commons Attribution 4.0 (CC BY 4.0) — https://creativecommons.org/licenses/by/4.0/
+출처 표시: 「도시 이름: GeoNames (geonames.org), CC BY 4.0」 — 화면 아래쪽과 README 에 적었습니다.
+
+변경 사항: scripts/build-cities.mjs 로 다음처럼 줄였습니다.
+  - 도시 안의 구역(PPLX)·옛 지명(PPLH)·버려진 곳(PPLQ·PPLW) 제외
+  - 이름은 한국어 이름(옛 이름·속칭 제외, 짧은 이름 → 가장 짧은 것, 끝의 「 시」 떼기), 없으면 영어 이름
+  - 좌표 소수 둘째 자리(약 1km), 인구 천 명 단위
+좌표 → 도시 이름은 「가장 가까운 도시」를 고르는 어림값이며, 행정 경계와 다를 수 있습니다.

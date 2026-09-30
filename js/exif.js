@@ -10,8 +10,10 @@
  *
  * 구조: JPEG(FFD8) → 마커를 차례로 넘기며 APP1(FFE1) 중 "Exif\0\0" 로 시작하는 것을 찾는다
  *       → TIFF 머리(II = 리틀엔디언 / MM = 빅엔디언, 42) → IFD0 → Exif IFD · GPS IFD.
- * 잘못된 파일·잘린 파일에서 예외를 던지지 않고 null(또는 빈 칸)을 돌려줍니다.
- * HEIC(아이폰 기본 형식)·PNG 는 읽지 않습니다 — 화면에서 JPEG 로 내보내 달라고 안내합니다.
+ * HEIC(아이폰 기본 형식, 2026-09-30 추가): ISOBMFF 상자 구조 — ftyp → meta → iinf 에서 종류가 'Exif' 인 항목을 찾고
+ *       → iloc 에서 그 항목의 자리(파일 위치 또는 idat 안 위치)를 읽는다 → 앞 4바이트(TIFF 머리까지 건너뛸 길이) 뒤가 TIFF 머리.
+ *       그다음은 JPEG 와 같은 TIFF 읽기를 그대로 쓴다. 사진 그림(HEVC) 자체는 여기서 풀지 않는다.
+ * 잘못된 파일·잘린 파일에서 예외를 던지지 않고 null(또는 빈 칸)을 돌려줍니다. PNG 등은 null.
  */
 (function (root) {
   'use strict';
@@ -44,6 +46,104 @@
         return { start: i + 10, end: i + 2 + len };
       }
       i += 2 + len;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------- HEIC / HEIF (ISOBMFF)
+  var HEIF_BRANDS = ['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'mif1', 'msf1', 'avif'];
+  function fourcc(b, p) { return String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]); }
+  function be(b, p, n) {                  // n 바이트 빅엔디언 정수(0·2·4·8), 범위 밖이면 null
+    if (p < 0 || p + n > b.length) return null;
+    var v = 0;
+    for (var i = 0; i < n; i++) v = v * 256 + b[p + i];
+    return v;
+  }
+  function isHeif(b) {
+    if (!b || b.length < 16 || fourcc(b, 4) !== 'ftyp') return false;
+    var size = be(b, 0, 4);
+    if (size === null || size < 16 || size > b.length) return false;
+    for (var p = 8; p + 4 <= size; p += 4) {
+      if (p === 12) continue;             // minor_version 자리
+      if (HEIF_BRANDS.indexOf(fourcc(b, p)) >= 0) return true;
+    }
+    return false;
+  }
+  // [start, end) 안의 상자들 → [{ type, start(내용 시작), end }]
+  function boxes(b, start, end) {
+    var out = [], p = start;
+    while (p + 8 <= end) {
+      var size = be(b, p, 4), type = fourcc(b, p + 4), head = 8;
+      if (size === 1) { size = be(b, p + 8, 8); head = 16; }
+      else if (size === 0) size = end - p;
+      if (size === null || size < head || p + size > end) break;
+      out.push({ type: type, start: p + head, end: p + size });
+      p += size;
+    }
+    return out;
+  }
+  function child(list, type) { for (var i = 0; i < list.length; i++) if (list[i].type === type) return list[i]; return null; }
+
+  // HEIC 안의 Exif 항목 → { start: TIFF 머리 위치, end, bytes } 또는 null
+  function findHeifExif(b) {
+    if (!isHeif(b)) return null;
+    var meta = child(boxes(b, 0, b.length), 'meta');
+    if (!meta) return null;
+    var inner = boxes(b, meta.start + 4, meta.end);          // meta 는 FullBox(판·깃발 4바이트)
+    var iinf = child(inner, 'iinf'), iloc = child(inner, 'iloc'), idat = child(inner, 'idat');
+    if (!iinf || !iloc) return null;
+    // iinf → Exif 항목 번호
+    var v = b[iinf.start], q = iinf.start + 4 + (v === 0 ? 2 : 4), exifId = null;
+    boxes(b, q, iinf.end).forEach(function (infe) {
+      if (exifId !== null || infe.type !== 'infe') return;
+      var iv = b[infe.start];
+      if (iv < 2) return;                                     // 판 0·1 에는 항목 종류(4글자)가 없다
+      var id = be(b, infe.start + 4, iv === 2 ? 2 : 4), tp = infe.start + 4 + (iv === 2 ? 2 : 4) + 2;
+      if (id !== null && tp + 4 <= infe.end && fourcc(b, tp) === 'Exif') exifId = id;
+    });
+    if (exifId === null) return null;
+    // iloc → 그 항목의 자리
+    var lv = b[iloc.start], p = iloc.start + 4;
+    if (p + 2 > iloc.end) return null;
+    var offSize = b[p] >> 4, lenSize = b[p] & 15, baseSize = b[p + 1] >> 4, idxSize = lv >= 1 ? b[p + 1] & 15 : 0;
+    p += 2;
+    var count = be(b, p, lv < 2 ? 2 : 4); p += lv < 2 ? 2 : 4;
+    for (var k = 0; k < (count || 0) && p < iloc.end; k++) {
+      var id = be(b, p, lv < 2 ? 2 : 4); p += lv < 2 ? 2 : 4;
+      var method = 0;
+      if (lv >= 1) { method = (be(b, p, 2) || 0) & 15; p += 2; }
+      p += 2;                                                  // data_reference_index
+      var base = be(b, p, baseSize); p += baseSize;
+      var n = be(b, p, 2); p += 2;
+      if (id === null || base === null || n === null) return null;
+      var parts = [];
+      for (var e = 0; e < n; e++) {
+        p += idxSize;
+        var off = be(b, p, offSize); p += offSize;
+        var len = be(b, p, lenSize); p += lenSize;
+        if (off === null || len === null) return null;
+        parts.push([base + off, len]);
+      }
+      if (id !== exifId) continue;
+      var origin = method === 1 ? (idat ? idat.start : -1) : 0;   // 1 = idat 안의 위치
+      if (method > 1 || origin < 0 || !parts.length) return null;
+      var bytes;
+      if (parts.length === 1) {
+        var s0 = origin + parts[0][0], l0 = parts[0][1] || (b.length - s0);
+        if (s0 + l0 > b.length) return null;
+        bytes = b.subarray(s0, s0 + l0);
+      } else {                                                 // 여러 조각이면 이어 붙인다(드묾)
+        var total = parts.reduce(function (a, x) { return a + x[1]; }, 0), at = 0;
+        bytes = new Uint8Array(total);
+        for (var j = 0; j < parts.length; j++) {
+          var sj = origin + parts[j][0];
+          if (sj + parts[j][1] > b.length) return null;
+          bytes.set(b.subarray(sj, sj + parts[j][1]), at); at += parts[j][1];
+        }
+      }
+      var skip = be(bytes, 0, 4);                              // exif_tiff_header_offset
+      if (skip === null || 4 + skip + 8 > bytes.length) return null;
+      return { bytes: bytes, start: 4 + skip, end: bytes.length };
     }
     return null;
   }
@@ -123,12 +223,17 @@
     return Math.round(deg * 1e6) / 1e6;
   }
 
-  // 공개 함수: 바이트 → { takenAt, offset, lat, lng, orientation, make, model, hasExif } 또는 null(JPEG 아님)
+  // 공개 함수: 바이트 → { format('jpeg'|'heic'), takenAt, offset, lat, lng, orientation, make, model, hasExif }
+  //            또는 null(JPEG·HEIC 가 아님)
   function parse(buf) {
-    var b = toBytes(buf);
-    if (!isJpeg(b)) return null;
-    var out = { hasExif: false, takenAt: '', offset: '', lat: null, lng: null, orientation: 1, make: '', model: '' };
-    var seg = findExifSegment(b);
+    var b = toBytes(buf), jpeg = isJpeg(b);
+    if (!jpeg && !isHeif(b)) return null;
+    var out = { format: jpeg ? 'jpeg' : 'heic', hasExif: false, takenAt: '', offset: '', lat: null, lng: null, orientation: 1, make: '', model: '' };
+    var seg = null;
+    try {
+      if (jpeg) seg = findExifSegment(b);
+      else { seg = findHeifExif(b); if (seg) b = seg.bytes; }
+    } catch (e) { seg = null; }
     if (!seg) return out;
     var r = reader(b, seg.start, seg.end);
     if (!r) return out;
@@ -152,7 +257,7 @@
     return out;
   }
 
-  var API = { parse: parse, isJpeg: isJpeg, findExifSegment: findExifSegment, exifDate: exifDate, dms: dms };
+  var API = { parse: parse, isJpeg: isJpeg, isHeif: isHeif, findExifSegment: findExifSegment, findHeifExif: findHeifExif, exifDate: exifDate, dms: dms };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.JournalExif = API;
 })(typeof window !== 'undefined' ? window : this);

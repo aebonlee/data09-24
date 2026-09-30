@@ -8,12 +8,16 @@
  *   동선      하루 안에서 위치 있는 사진을 찍은 시각 순으로 잇고, 30m 안에서 연달아 찍은 곳은 한 점으로 본다
  *   경비      항목마다 「금액 × 사용자가 적은 환율」을 원 단위로 반올림한 뒤 더한다(합계를 나중에 반올림하지 않음)
  *   지도      정거원통도법(경도 × cos(가운데 위도)) — 여행 범위가 좁아 이 정도로 충분하다
+ *   도시 이름 좌표 → GeoNames 1만 5천 명 이상 도시 중 「도시 반경을 뺀 거리」가 가장 가까운 곳(오프라인, 2026-09-30)
+ *   표시 통화 원 합계를 USD·JPY·EUR 로 — 사용자가 적은 「1 X = ?원」 환율로 나눈다
+ *   정산      항목마다 원 환산액을 나눌 사람 수로 원 단위로 나누고(나머지 1원씩은 앞사람부터), 사람별 낸 돈 − 부담액으로
+ *             주고받을 금액을 정한 뒤, 송금 횟수가 가장 적은 방법을 찾는다(16명까지 정확히, 그 이상은 근사)
  */
 (function (root) {
   'use strict';
 
   var SCHEMA_VERSION = 1;
-  var LIMITS = { trips: 200, photosPerTrip: 2000, entriesPerTrip: 1000, expensesPerTrip: 2000, amountMax: 1e12 };
+  var LIMITS = { trips: 200, photosPerTrip: 2000, entriesPerTrip: 1000, expensesPerTrip: 2000, amountMax: 1e12, members: 20 };
   var SAME_SPOT_M = 30;          // 이 거리 안에서 연달아 찍은 사진은 같은 곳
   var NEAR_COUNTRY_DEG = 1.0;    // 해안선이 거친(1:110m) 지도라 바닷가 좌표가 나라 밖으로 빠질 때 가까운 나라로 본다
 
@@ -366,13 +370,229 @@
     if (!/^[A-Z]{3}$/.test(x.currency || '')) e.currency = '통화를 골라 주세요.';
     if (EXPENSE_CATEGORIES.indexOf(x.category) < 0) e.category = '분류를 골라 주세요.';
     if (!isDate(x.date)) e.date = '날짜를 골라 주세요.';
+    if (x.paidBy != null && typeof x.paidBy !== 'string') e.paidBy = '낸 사람 형식이 맞지 않습니다.';
+    if (x.split != null && (!Array.isArray(x.split) || x.split.some(function (id) { return typeof id !== 'string'; }))) e.split = '나눌 사람 형식이 맞지 않습니다.';
     return e;
+  }
+
+  // ------------------------------------------------------------------ 표시 통화 (원 → USD·JPY·EUR)
+  var VIEW_CURRENCIES = ['USD', 'JPY', 'EUR'];
+  var CUR_SIGN = { KRW: '₩', USD: '$', JPY: '¥', EUR: '€' };
+  var CUR_DIGITS = { KRW: 0, JPY: 0, VND: 0, TWD: 0 };          // 소수 없이 쓰는 통화
+  function curDigits(c) { return CUR_DIGITS[c] == null ? 2 : CUR_DIGITS[c]; }
+  // 원 금액 → 그 통화 금액(사용자 환율 「1 cur = rate 원」). 환율이 없으면 null
+  function fromHome(wonValue, cur, rates, home) {
+    home = home || 'KRW';
+    if (cur === home) return Math.round(wonValue);
+    var r = rates && rates[cur];
+    if (!(r > 0)) return null;
+    var k = Math.pow(10, curDigits(cur));
+    return Math.round(wonValue / r * k) / k;
+  }
+  // 표시 글자: '₩865,825' · '$624.92' · '¥94,937' — 환율이 없으면 ''
+  function money(wonValue, cur, rates, home) {
+    var v = fromHome(wonValue, cur, rates, home);
+    if (v === null) return '';
+    var parts = Math.abs(v).toFixed(curDigits(cur)).split('.');
+    var txt = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (parts[1] ? '.' + parts[1] : '');
+    var sign = CUR_SIGN[cur];
+    return (v < 0 ? '-' : '') + (sign ? sign + txt : txt + ' ' + cur);
+  }
+  // 원 금액의 USD·JPY·EUR 환산 목록 [{ cur, value(null = 환율 없음), text }]
+  function equivalents(wonValue, rates, home) {
+    return VIEW_CURRENCIES.map(function (c) { return { cur: c, value: fromHome(wonValue, c, rates, home), text: money(wonValue, c, rates, home) }; });
+  }
+
+  // ------------------------------------------------------------------ 정산 (함께 간 사람끼리 나눠 내기)
+  // trip.members = [{ id, name }], 지출 x.paidBy = 낸 사람 id, x.split = 나눌 사람 id 목록(비우면 모두)
+  var ME = { id: 'm-me', name: '나' };
+  function members(trip) { return (trip.members && trip.members.length) ? trip.members : [ME]; }
+  // 원 금액을 ids 에 원 단위로 나눈다 — 나머지는 앞사람부터 1원씩(합이 정확히 같다)
+  function splitWon(total, ids) {
+    var out = {}, n = ids.length;
+    if (!n) return out;
+    var sign = total < 0 ? -1 : 1, a = Math.abs(Math.round(total)), base = Math.floor(a / n), rest = a - base * n;
+    ids.forEach(function (id, i) { out[id] = sign * (base + (i < rest ? 1 : 0)); });
+    return out;
+  }
+  // 지출 하나의 낸 사람·나눌 사람(없는 사람은 걸러 내고, 비었으면 기본값)
+  function payerOf(x, ms) {
+    return ms.some(function (m) { return m.id === x.paidBy; }) ? x.paidBy : ms[0].id;
+  }
+  function sharersOf(x, ms) {
+    var ids = ms.map(function (m) { return m.id; });
+    var sel = (x.split || []).filter(function (id) { return ids.indexOf(id) >= 0; });
+    return sel.length ? ids.filter(function (id) { return sel.indexOf(id) >= 0; }) : ids;   // 사람 목록 순서로
+  }
+  function settle(trip) {
+    var ms = members(trip), paid = {}, owed = {}, net = {};
+    ms.forEach(function (m) { paid[m.id] = 0; owed[m.id] = 0; });
+    var items = [], excluded = [], defaulted = 0;
+    (trip.expenses || []).forEach(function (x) {
+      var h = toHome(x, trip.rates, trip.home);
+      if (!h.ok) { excluded.push(x.id); return; }
+      var payer = payerOf(x, ms), who = sharersOf(x, ms), shares = splitWon(h.value, who);
+      if (payer !== x.paidBy) defaulted++;
+      paid[payer] += h.value;
+      who.forEach(function (id) { owed[id] += shares[id]; });
+      items.push({ id: x.id, won: h.value, payer: payer, sharers: who, shares: shares, each: who.length ? Math.round(h.value / who.length) : 0 });
+    });
+    ms.forEach(function (m) { net[m.id] = paid[m.id] - owed[m.id]; });
+    return { members: ms, items: items, paid: paid, owed: owed, net: net, excluded: excluded, defaulted: defaulted,
+      total: items.reduce(function (a, it) { return a + it.won; }, 0), transfers: minTransfers(net, ms.map(function (m) { return m.id; })) };
+  }
+  // 주고받을 돈 { id: +받을 / -낼 } → 송금 목록 [{ from, to, won }]. 합이 0 이 아니면 null.
+  // 송금 횟수의 최솟값 = (0 아닌 사람 수) − (합이 0 인 무리로 가장 많이 나눈 수). 16명까지는 부분집합 DP 로 정확히 찾고,
+  // 각 무리 안에서는 가장 많이 낼 사람 → 가장 많이 받을 사람 순서로 이어 무리 크기 − 1 번에 끝낸다.
+  function minTransfers(net, order) {
+    var ids = (order || Object.keys(net)).filter(function (id) { return net[id]; });
+    var sum = ids.reduce(function (a, id) { return a + net[id]; }, 0);
+    if (sum !== 0) return null;
+    var groups;
+    if (ids.length <= 16) {
+      var n = ids.length, full = (1 << n) - 1, total = new Array(full + 1), dp = new Array(full + 1);
+      total[0] = 0; dp[0] = 0;
+      for (var mask = 1; mask <= full; mask++) {
+        var low = mask & -mask, bit = 31 - Math.clz32(low);
+        total[mask] = total[mask ^ low] + net[ids[bit]];
+        var best = -1;
+        for (var i = 0; i < n; i++) if (mask & (1 << i)) best = Math.max(best, dp[mask ^ (1 << i)]);
+        dp[mask] = best + (total[mask] === 0 ? 1 : 0);
+      }
+      // 되짚기: 하나씩 빼며 합이 0 이 되는 지점마다 무리를 끊는다
+      groups = []; var cur = [], m2 = full;
+      while (m2) {
+        for (var j = 0; j < n; j++) {
+          if (!(m2 & (1 << j))) continue;
+          var next = m2 ^ (1 << j);
+          if (dp[next] === dp[m2] - (total[m2] === 0 ? 1 : 0)) {
+            cur.push(ids[j]); m2 = next;
+            if (total[m2] === 0) { groups.push(cur); cur = []; }
+            break;
+          }
+        }
+      }
+    } else groups = [ids];
+    var out = [];
+    groups.forEach(function (g) {
+      var bal = {}; g.forEach(function (id) { bal[id] = net[id]; });
+      for (var guard = 0; guard < g.length * 2; guard++) {
+        var debt = g.filter(function (id) { return bal[id] < 0; }).sort(function (a, b) { return bal[a] - bal[b]; })[0];
+        var cred = g.filter(function (id) { return bal[id] > 0; }).sort(function (a, b) { return bal[b] - bal[a]; })[0];
+        if (!debt || !cred) break;
+        var amt = Math.min(-bal[debt], bal[cred]);
+        out.push({ from: debt, to: cred, won: amt });
+        bal[debt] += amt; bal[cred] -= amt;
+      }
+    });
+    return out;
+  }
+
+  // ------------------------------------------------------------------ 도시 이름 (오프라인 역지오코딩 — GeoNames cities15000)
+  // cities = vendor/cities15000.js 의 { text } — 한 줄 「이름|위도×100|경도×100|나라|인구(천 명)」
+  var CITY_MAX_KM = 60;           // 이보다 멀면 「도시 없음」(바다 한가운데·오지)
+  function cityIndex(cities) {
+    if (!cities || !cities.text) return null;
+    if (cities._idx) return cities._idx;
+    var rows = cities.text.split('\n'), grid = {}, list = [];
+    rows.forEach(function (line) {
+      var f = line.split('|');
+      if (f.length < 5) return;
+      var c = { name: f[0], lat: +f[1] / 100, lng: +f[2] / 100, cc: f[3], popK: +f[4] || 0 };
+      c.r = Math.min(25, 0.3 * Math.sqrt(c.popK));          // 도시 반경 짐작(km) — 인구 270만 오사카 ≈ 16km
+      var k = Math.floor(c.lat) + ',' + Math.floor(c.lng);
+      (grid[k] = grid[k] || []).push(list.length);
+      list.push(c);
+    });
+    cities._idx = { list: list, grid: grid };
+    return cities._idx;
+  }
+  // 좌표 → { name, cc, km(도시 중심까지), pop } 또는 null. 「도시 반경을 뺀 거리」가 가장 짧은 도시.
+  // 큰 도시 가장자리에서 옆 소도시 이름이 나오지 않게 하려는 것이다(교토 기요미즈데라 → 교토).
+  function cityAt(lat, lng, cities) {
+    var idx = cityIndex(cities);
+    if (!idx || !isFinite(lat) || !isFinite(lng)) return null;
+    var la = Math.floor(lat), lo = Math.floor(lng), best = null, bestS = Infinity;
+    for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+      var x = lo + dx; if (x < -180) x += 360; if (x >= 180) x -= 360;
+      var cell = idx.grid[(la + dy) + ',' + x];
+      if (!cell) continue;
+      for (var i = 0; i < cell.length; i++) {
+        var c = idx.list[cell[i]], km = haversine({ lat: lat, lng: lng }, c) / 1000;
+        if (km > CITY_MAX_KM) continue;
+        var score = km - c.r;
+        if (score < bestS) { bestS = score; best = { name: c.name, cc: c.cc, km: Math.round(km * 10) / 10, pop: c.popK * 1000 }; }
+      }
+    }
+    return best;
+  }
+  // 사진·장소 점의 이름 — 외부 지도 API 로 받아 둔 이름(p.place)이 있으면 그것, 없으면 가까운 도시
+  function placeName(p, cities) {
+    if (p && p.place) return p.place;
+    if (!hasPos(p)) return '';
+    var c = cityAt(p.lat, p.lng, cities);
+    return c ? c.name : '';
+  }
+  // 사진 위치에서 찾은 도시를 여행의 도시 목록에 더한다. 반환: 새로 더한 도시들
+  function addCitiesFromPhotos(trip, cities) {
+    var added = [];
+    (trip.photos || []).slice().sort(byTime).forEach(function (p) {
+      if (!hasPos(p)) return;
+      var c = cityAt(p.lat, p.lng, cities);
+      if (c && trip.cities.indexOf(c.name) < 0 && trip.cities.length < 100) { trip.cities.push(c.name); added.push(c.name); }
+    });
+    return added;
+  }
+
+  // ------------------------------------------------------------------ 외부 지도 API (선택 — 사용자 본인 키, 기본 꺼짐)
+  // 좌표만 보낸다(사진은 보내지 않음). 요청 주소 만들기와 답 읽기는 순수 함수라 테스트한다.
+  var GEO_PROVIDERS = {
+    google: { label: 'Google Geocoding API (세계)', keyHint: 'AIza...' },
+    kakao: { label: '카카오 로컬 API (국내만)', keyHint: 'REST API 키' }
+  };
+  function geoRequest(provider, lat, lng, key) {
+    var la = (+lat).toFixed(6), ln = (+lng).toFixed(6);
+    if (provider === 'google') {
+      return { url: 'https://maps.googleapis.com/maps/api/geocode/json?latlng=' + la + ',' + ln + '&language=ko&key=' + encodeURIComponent(key), headers: {} };
+    }
+    if (provider === 'kakao') {
+      return { url: 'https://dapi.kakao.com/v2/local/geo/coord2address.json?x=' + ln + '&y=' + la, headers: { Authorization: 'KakaoAK ' + key } };
+    }
+    return null;
+  }
+  var GOOGLE_POI = ['tourist_attraction', 'point_of_interest', 'establishment', 'park', 'natural_feature', 'airport', 'train_station', 'transit_station', 'premise'];
+  // 답(JSON) → { name, detail } 또는 { error }
+  function geoParse(provider, j) {
+    if (!j || typeof j !== 'object') return { error: '답을 읽지 못했어요.' };
+    if (provider === 'google') {
+      if (j.status === 'ZERO_RESULTS') return { name: '', detail: '' };
+      if (j.status !== 'OK') return { error: 'Google: ' + (j.status || '오류') + (j.error_message ? ' — ' + j.error_message : '') };
+      var rs = j.results || [];
+      if (!rs.length) return { name: '', detail: '' };
+      var poi = rs.filter(function (r) { return (r.types || []).some(function (t) { return GOOGLE_POI.indexOf(t) >= 0; }); })[0];
+      var comp = function (r, type) { var c = (r.address_components || []).filter(function (a) { return (a.types || []).indexOf(type) >= 0; })[0]; return c ? c.long_name : ''; };
+      var r0 = rs[0];
+      var area = [comp(r0, 'locality') || comp(r0, 'administrative_area_level_2') || comp(r0, 'administrative_area_level_1'),
+        comp(r0, 'sublocality_level_1') || comp(r0, 'neighborhood')].filter(Boolean);
+      area = area.filter(function (x, i) { return area.indexOf(x) === i; });
+      var name = poi && poi.address_components && poi.address_components[0] ? poi.address_components[0].long_name : area.join(' ');
+      return { name: String(name || '').slice(0, 60), detail: String(r0.formatted_address || '').slice(0, 120) };
+    }
+    if (provider === 'kakao') {
+      if (j.errorType || j.code) return { error: '카카오: ' + (j.message || j.errorType || j.code) };
+      var d = (j.documents || [])[0];
+      if (!d) return { name: '', detail: '' };
+      var road = d.road_address || {}, addr = d.address || {};
+      var nm = road.building_name || [addr.region_2depth_name, addr.region_3depth_name].filter(Boolean).join(' ');
+      return { name: String(nm || '').slice(0, 60), detail: String(road.address_name || addr.address_name || '').slice(0, 120) };
+    }
+    return { error: '지원하지 않는 지도 API 예요.' };
   }
 
   // ------------------------------------------------------------------ 여행·기록
   function newTrip(title) {
     return { id: uid('t'), title: title || '새 여행', start: '', end: '', countries: [], cities: [], memo: '',
-      home: 'KRW', rates: {}, entries: [], photos: [], expenses: [], report: '' };
+      home: 'KRW', rates: {}, members: [], entries: [], photos: [], expenses: [], report: '' };
   }
   function newEntry(date) { return { id: uid('e'), date: date || '', time: '', place: '', text: '', keywords: '', lat: null, lng: null }; }
   function validTrip(t) {
@@ -389,8 +609,9 @@
   function photosOf(trip, entryId) { return (trip.photos || []).filter(function (p) { return p.entryId === entryId; }).sort(byTime); }
 
   // 사진이 있는 날 중 아직 기록이 없는 날마다 기록을 하나 만들고 그날 사진(기록에 안 붙은 것)을 붙인다.
-  // 장소 칸은 사진 위치의 나라 이름으로 미리 채운다. 반환: 새로 만든 기록 수
-  function entriesFromPhotos(trip, world) {
+  // 장소 칸은 그날 사진 위치의 도시 이름들(들른 순서, 「오사카 · 교토」)로, 도시를 못 찾으면 나라 이름으로 미리 채운다.
+  // 반환: 새로 만든 기록 수
+  function entriesFromPhotos(trip, world, cities) {
     var made = 0;
     groupByDay((trip.photos || []).filter(function (p) { return !p.entryId && !needsDate(trip, p); })).forEach(function (g) {
       if (!g.date) return;
@@ -400,8 +621,10 @@
         var first = g.photos.filter(hasPos)[0];
         if (first) {
           e.lat = first.lat; e.lng = first.lng;
+          var names = [];
+          g.photos.filter(hasPos).forEach(function (p) { var nm = placeName(p, cities); if (nm && names.indexOf(nm) < 0) names.push(nm); });
           var c = countryAt(first.lat, first.lng, world);
-          if (c) e.place = c.ko;
+          e.place = names.length ? names.slice(0, 4).join(' · ') : (c ? c.ko : '');
         }
         e.time = timeOf(photoStamp(g.photos[0]));
         trip.entries.push(e); made++;
@@ -507,6 +730,8 @@
       ['countries', 'cities', 'entries', 'photos', 'expenses'].forEach(function (k) { if (!Array.isArray(t[k])) errs.push(n + ': ' + k + ' 목록이 없습니다.'); });
       if (!ok(validTrip(t))) errs.push(n + ': ' + validTrip(t)[Object.keys(validTrip(t))[0]]);
       (t.expenses || []).forEach(function (x, j) { var er = validExpense(x); if (!ok(er)) errs.push(n + ' 경비 ' + (j + 1) + '번: ' + er[Object.keys(er)[0]]); });
+      if (t.members != null && (!Array.isArray(t.members) || t.members.length > LIMITS.members ||
+          t.members.some(function (m) { return !m || typeof m.id !== 'string' || !String(m.name || '').trim(); }))) errs.push(n + ': 함께 간 사람(members) 형식이 맞지 않습니다.');
       if ((t.photos || []).length > LIMITS.photosPerTrip) errs.push(n + ': 사진은 ' + LIMITS.photosPerTrip + '장까지입니다.');
     });
     return errs.filter(function (x, i, a) { return a.indexOf(x) === i; }).slice(0, 12);
@@ -525,7 +750,11 @@
     parseAmount: parseAmount, parseRate: parseRate, toHome: toHome, expenseTotals: expenseTotals, validExpense: validExpense,
     newTrip: newTrip, newEntry: newEntry, validTrip: validTrip, ok: ok, entriesOn: entriesOn, photosOf: photosOf,
     entriesFromPhotos: entriesFromPhotos, addCountriesFromPhotos: addCountriesFromPhotos, tripStats: tripStats,
-    diaryPrompt: diaryPrompt, splitTitle: splitTitle, reportPrompt: reportPrompt, checkDb: checkDb
+    diaryPrompt: diaryPrompt, splitTitle: splitTitle, reportPrompt: reportPrompt, checkDb: checkDb,
+    VIEW_CURRENCIES: VIEW_CURRENCIES, fromHome: fromHome, money: money, equivalents: equivalents,
+    ME: ME, members: members, splitWon: splitWon, payerOf: payerOf, sharersOf: sharersOf, settle: settle, minTransfers: minTransfers,
+    cityIndex: cityIndex, cityAt: cityAt, placeName: placeName, addCitiesFromPhotos: addCitiesFromPhotos,
+    GEO_PROVIDERS: GEO_PROVIDERS, geoRequest: geoRequest, geoParse: geoParse
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.JLogic = API;

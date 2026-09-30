@@ -2,7 +2,7 @@
  * JOURNAL — 예시 여행 (전부 가상). 화면의 「예시 여행 불러오기」와 테스트가 같은 것을 씁니다.
  *  - 사진 10장은 samples/ 의 합성 이미지이고, 찍은 시각·위치는 그 파일의 EXIF 와 같습니다(테스트가 대조).
  *  - 환율은 계산을 보여 주기 위한 가정값입니다. 실제 환율이 아닙니다.
- *  - 사람 이름·연락처는 없습니다.
+ *  - 사람 이름·연락처는 없습니다(정산 예시의 「가족A·가족B」는 가명).
  */
 (function (root) {
   'use strict';
@@ -10,8 +10,11 @@
     return { id: 'sp-' + n, name: file, size: size, src: 'samples/' + file, takenAt: takenAt, fileTime: '',
       dateSource: takenAt ? 'exif' : 'none', lat: lat, lng: lng, offset: offset || '', entryId: entryId || '' };
   }
-  function x(n, date, amount, currency, category, memo) {
-    return { id: 'sx-' + n, date: date, amount: amount, currency: currency, category: category, memo: memo };
+  function x(n, date, amount, currency, category, memo, paidBy, split) {
+    var o = { id: 'sx-' + n, date: date, amount: amount, currency: currency, category: category, memo: memo };
+    if (paidBy) o.paidBy = paidBy;
+    if (split) o.split = split;
+    return o;
   }
 
   function kansai() {
@@ -20,7 +23,7 @@
       title: '간사이 3박 4일 (예시)', start: '2026-04-03', end: '2026-04-06',
       countries: ['392'], cities: ['오사카', '교토', '나라'],
       memo: '혼자 떠난 봄 여행. 가상 예시입니다.',
-      home: 'KRW', rates: { JPY: 9.12, USD: 1385.5 },
+      home: 'KRW', rates: { JPY: 9.12, USD: 1385.5, EUR: 1480 }, members: [],
       report: '',
       entries: [
         { id: 'se-1', date: '2026-04-03', time: '11:20', place: '오사카 · 도톤보리', lat: 34.4347, lng: 135.244,
@@ -64,12 +67,20 @@
   // 방문 지도를 보여 주기 위한 지난 여행 두 개(사진 없이 나라·도시만)
   function past() {
     return [
+      // 정산 예시: 세 사람이 나눠 낸 여행 (가족A·가족B 는 가명)
       { id: 'sample-danang', sample: true, title: '다낭 가족여행 (예시)', start: '2025-12-20', end: '2025-12-24',
-        countries: ['704'], cities: ['다낭', '호이안'], memo: '', home: 'KRW', rates: { VND: 0.055 }, report: '',
+        countries: ['704'], cities: ['다낭', '호이안'], memo: '세 사람이 나눠 낸 여행 — 「정산」 화면 예시', home: 'KRW',
+        rates: { VND: 0.055, USD: 1385.5, JPY: 9.12, EUR: 1480 }, report: '',
+        members: [{ id: 'm-me', name: '나' }, { id: 'm-a', name: '가족A' }, { id: 'm-b', name: '가족B' }],
         entries: [], photos: [],
-        expenses: [x(21, '2025-12-21', 450000, 'VND', '식비', '해산물 저녁'), x(22, '2025-12-22', 1200000, 'VND', '관광·입장', '바나힐')] },
+        expenses: [
+          x(21, '2025-12-21', 450000, 'VND', '식비', '해산물 저녁', 'm-me'),
+          x(22, '2025-12-22', 1200000, 'VND', '관광·입장', '바나힐', 'm-a'),
+          x(23, '2025-12-20', 1500000, 'KRW', '숙박', '리조트 4박', 'm-b'),
+          x(24, '2025-12-23', 320000, 'VND', '식비', '카페 (둘이서)', 'm-me', ['m-me', 'm-a'])
+        ] },
       { id: 'sample-europe', sample: true, title: '파리·로마 (예시)', start: '2024-05-10', end: '2024-05-18',
-        countries: ['250', '380', '336'], cities: ['파리', '로마', '바티칸'], memo: '', home: 'KRW', rates: {}, report: '',
+        countries: ['250', '380', '336'], cities: ['파리', '로마', '바티칸'], memo: '', home: 'KRW', rates: {}, members: [], report: '',
         entries: [], photos: [], expenses: [] }
     ];
   }

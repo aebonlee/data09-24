@@ -11,6 +11,7 @@
 --  여행 하나가 trip 한 행이고, 그 안의 entries·photos·expenses 배열이 각각 entry·photo·expense 표가 됩니다.
 --    각 레코드의 id → trip_id · entry_id · photo_id · expense_id
 --    start/end → start_date/end_date, text → body, date → entry_date/spent_on
+--    (2026-09-30) members → trip.members, paidBy → paid_by, split → split_among, place/placeDetail → photo.place/place_detail
 --
 --  표 목록
 --    trip      여행 — 이름, 기간, 나라(Natural Earth 숫자 코드), 도시, 환율(직접 입력), AI 리포트
@@ -128,6 +129,22 @@ create table if not exists public.expense (
     references public.trip (owner_id, trip_id) on delete cascade on update cascade
 );
 create index if not exists expense_trip_idx on public.expense (owner_id, trip_id, spent_on);
+
+-- 2026-09-30 추가 — 정산(함께 간 사람 · 낸 사람 · 나눌 사람)과 외부 지도 API 로 받은 장소 이름.
+-- 먼저 만든 표에도 붙도록 add column if not exists 로 둔다(이미 있으면 통째로 건너뛴다 — 재실행 안전).
+--   trip.members      [{"id": "m-me", "name": "나"}, …] — 도구의 members 배열 그대로, 20명까지
+--   expense.paid_by   낸 사람 id(비우면 첫 사람), split_among 나눌 사람 id 목록(비우면 모두)
+--   photo.place       외부 지도 API 로 받은 장소 이름(비우면 도구가 GeoNames 로 가까운 도시를 붙임), place_detail 주소
+alter table public.trip add column if not exists members jsonb not null default '[]'::jsonb
+  constraint trip_members check (jsonb_typeof(members) = 'array' and jsonb_array_length(members) <= 20);
+alter table public.expense add column if not exists paid_by text
+  constraint expense_paid_by check (paid_by is null or length(paid_by) between 1 and 40);
+alter table public.expense add column if not exists split_among text[] not null default '{}'
+  constraint expense_split check (array_length(split_among, 1) is null or array_length(split_among, 1) <= 20);
+alter table public.photo add column if not exists place text not null default ''
+  constraint photo_place check (length(place) <= 60);
+alter table public.photo add column if not exists place_detail text not null default ''
+  constraint photo_place_detail check (length(place_detail) <= 120);
 
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거

@@ -1,5 +1,5 @@
 // 실행: node test/logic.test.mjs   (의존성 없음)
-// EXIF 읽기(합성 JPEG 10장) · 일자 묶기 · 동선 순서 · 경비 합계(환율 환산) · 나라 판정 · 프롬프트 · 백업 검사
+// EXIF 읽기(합성 JPEG 10장 · HEIC 3장) · 일자 묶기 · 동선 순서 · 경비 합계(환율 환산) · 나라 판정 · 도시 이름 · 표시 통화 · 정산 · 지도 API 답 읽기 · 프롬프트 · 백업 검사
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -8,6 +8,7 @@ const E = require('../js/exif.js');
 const L = require('../js/logic.js');
 const S = require('../js/sample-data.js');
 const W = require('../vendor/world-110m.js');
+const C = require('../vendor/cities15000.js');
 const M = JSON.parse(readFileSync(new URL('../samples/manifest.json', import.meta.url), 'utf8'));
 const jpg = (f) => readFileSync(new URL('../samples/' + f, import.meta.url));
 
@@ -102,7 +103,17 @@ test('파일 날짜로 짐작한 사진이 여행 기간 밖이면 「날짜 확
   assert.equal(L.needsDate(t, odd), false);
   assert.equal(L.needsDate(t, { name: 'x', takenAt: '' }), true);
 });
-test('사진으로 일자별 기록 만들기 — 4편, 장소는 사진 위치의 나라, 다시 눌러도 늘지 않는다', () => {
+test('사진으로 일자별 기록 만들기 — 도시 자료가 있으면 장소 칸에 그날 들른 도시들(들른 순서)', () => {
+  const t = L.newTrip('테스트');
+  t.photos = S.kansai().photos.map((p) => ({ ...p, entryId: '' }));
+  assert.equal(L.entriesFromPhotos(t, W, C), 4);
+  assert.deepEqual(t.entries.map((e) => e.place), ['Izumisano · 오사카', '오사카', '교토', '나라']);
+  const t2 = L.newTrip('api'); t2.photos = S.kansai().photos.map((p) => ({ ...p, entryId: '' }));
+  t2.photos[1].place = '도톤보리';                                   // 외부 지도 API 로 받아 둔 이름이 먼저
+  L.entriesFromPhotos(t2, W, C);
+  assert.equal(t2.entries[0].place, 'Izumisano · 도톤보리');
+});
+test('사진으로 일자별 기록 만들기 — 4편, 도시 자료가 없으면 장소는 사진 위치의 나라, 다시 눌러도 늘지 않는다', () => {
   const t = L.newTrip('테스트');
   t.photos = S.kansai().photos.map((p) => ({ ...p, entryId: '' }));
   assert.equal(L.entriesFromPhotos(t, W), 4);
@@ -234,6 +245,207 @@ test('백업 검사: 예시는 통과, 판 번호·경비 형식이 틀리면 �
   assert.ok(L.checkDb(bad).some((m) => m.includes('경비 1번')));
   const bad2 = L.clone(db); bad2.trips[0].end = '2026-04-01';
   assert.ok(L.checkDb(bad2).some((m) => m.includes('시작일보다 빠릅니다')));
+});
+
+console.log('아이폰 HEIC (samples/heic — macOS sips 로 JPEG 예시를 HEIC 로 바꾼 것, 애플 인코더가 쓴 실제 HEIC 구조)');
+const heic = (f) => readFileSync(new URL('../samples/heic/' + f, import.meta.url));
+test('HEIC 3장: 찍은 시각·시간대·위경도가 같은 JPEG 예시와 같다, GPS 없는 사진은 위치 없음', () => {
+  for (const f of ['kansai_02_dotonbori', 'kansai_07_gion', 'kansai_09_nogps']) {
+    const h = E.parse(heic(f + '.heic')), j = E.parse(jpg(f + '.jpg'));
+    assert.equal(h.format, 'heic'); assert.equal(j.format, 'jpeg');
+    assert.equal(h.hasExif, true, f);
+    for (const k of ['takenAt', 'offset', 'lat', 'lng']) assert.equal(h[k], j[k], f + ' ' + k);
+  }
+  assert.equal(E.parse(heic('kansai_09_nogps.heic')).lat, null);
+});
+test('HEIC 가 아니면 null(mp4 ftyp·PNG), 잘린 HEIC 는 예외 없이 빈 값', () => {
+  const mp4 = new Uint8Array([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0, 0x6d, 0x70, 0x34, 0x31, 0, 0, 0, 8]);
+  assert.equal(E.isHeif(mp4), false); assert.equal(E.parse(mp4), null);
+  const full = heic('kansai_02_dotonbori.heic');
+  for (const n of [40, 200, 400, full.length - 10]) {
+    const r = E.parse(full.subarray(0, n));
+    assert.ok(r && r.format === 'heic', '잘린 길이 ' + n);
+    if (n < 400) assert.equal(r.lat, null);
+  }
+});
+// 판 2 iloc(idat 안 위치 · 조각 두 개 · 4바이트 항목 번호) + 판 3 infe(4바이트 항목 번호)로 직접 만든 HEIF — 애플 파일과 다른 갈래를 확인
+function box(type, ...parts) {
+  const body = Buffer.concat(parts.map((p) => Buffer.from(p)));
+  const h = Buffer.alloc(8); h.writeUInt32BE(8 + body.length); h.write(type, 4, 'latin1');
+  return Buffer.concat([h, body]);
+}
+function u(n, v) { const b = Buffer.alloc(n); if (n === 2) b.writeUInt16BE(v); else b.writeUInt32BE(v); return b; }
+function makeHeif(tiff) {
+  const payload = Buffer.concat([u(4, 6), Buffer.from('Exif\0\0', 'latin1'), tiff]);
+  const cut = 17;                                                   // 두 조각으로 나눈다
+  const idat = box('idat', payload);
+  const infe = (id, type) => box('infe', [3, 0, 0, 0], u(4, id), u(2, 0), Buffer.from(type, 'latin1'), [0]);
+  const iinf = box('iinf', [0, 0, 0, 0], u(2, 2), infe(1, 'hvc1'), infe(70000, 'Exif'));
+  // iloc 판 2: offset 4바이트, length 4바이트, base 0, index 0, 항목 1개(번호 70000 은 2바이트에 못 담아 4바이트 판 2)
+  const iloc = box('iloc', [2, 0, 0, 0], [0x44, 0x00], u(4, 1),
+    u(4, 70000), u(2, 1), u(2, 0), u(2, 2), u(4, 0), u(4, cut), u(4, cut), u(4, payload.length - cut));
+  const meta = box('meta', [0, 0, 0, 0], box('hdlr', [0, 0, 0, 0], u(4, 0), Buffer.from('pict', 'latin1'), Buffer.alloc(13)), iinf, iloc, idat);
+  const ftyp = box('ftyp', Buffer.from('heic', 'latin1'), u(4, 0), Buffer.from('mif1heic', 'latin1'));
+  return new Uint8Array(Buffer.concat([ftyp, meta]));
+}
+test('직접 만든 HEIF(iloc 판 2 · idat 안 위치 · 두 조각 · infe 판 3)도 읽는다', () => {
+  const j = jpg('kansai_05_inari.jpg'), seg = E.findExifSegment(j);
+  const h = E.parse(makeHeif(Buffer.from(j.subarray(seg.start, seg.end))));
+  const r = E.parse(j);
+  assert.equal(h.format, 'heic');
+  assert.equal(h.takenAt, r.takenAt); assert.equal(h.lat, r.lat); assert.equal(h.lng, r.lng);
+});
+
+console.log('도시 이름 (GeoNames cities15000 — 오프라인)');
+test('좌표 → 가까운 도시: 오사카·교토(기요미즈데라·기온·이나리)·나라·서울·제주·다낭·파리, 망망대해는 없음', () => {
+  const at = (a, b) => (L.cityAt(a, b, C) || {}).name;
+  assert.equal(at(34.6687, 135.5013), '오사카');       // 도톤보리
+  assert.equal(at(34.7053, 135.4906), '오사카');       // 우메다
+  assert.equal(at(34.9671, 135.7727), '교토');         // 후시미 이나리 — 큰 도시 가장자리
+  assert.equal(at(34.9949, 135.785), '교토');
+  assert.equal(at(35.0037, 135.7788), '교토');
+  assert.equal(at(34.6851, 135.843), '나라');
+  assert.equal(at(37.5663, 126.9779), '서울');
+  assert.equal(at(33.5, 126.53), '제주');
+  assert.equal(at(16.05, 108.2), '다낭');
+  assert.equal(at(48.8584, 2.2945), '파리');
+  assert.equal(L.cityAt(0, -150, C), null);
+  assert.equal(L.cityAt(34.6687, 135.5013, null), null, '자료가 아직 안 왔으면 없음');
+  assert.ok(C.count > 30000 && /GeoNames/.test(C.source));
+});
+test('사진 위치의 도시를 여행 도시 목록에 더한다(찍은 순서, 이미 있으면 건너뜀)', () => {
+  const t = S.kansai(); t.cities = ['오사카'];
+  assert.deepEqual(L.addCitiesFromPhotos(t, C), ['Izumisano', '교토', '나라']);
+  assert.deepEqual(L.addCitiesFromPhotos(t, C), []);
+  assert.equal(L.placeName({ lat: 34.6687, lng: 135.5013, place: '도톤보리' }, C), '도톤보리');
+  assert.equal(L.placeName({ lat: null, lng: null }, C), '');
+});
+
+console.log('표시 통화 (원 기준 → USD·JPY·EUR, 사용자가 적은 환율)');
+test('간사이 합계 865,825원 ≈ $624.92 · ¥94,937 · €585.02 (1 USD = 1385.5원 · 1 JPY = 9.12원 · 1 EUR = 1480원)', () => {
+  const t = S.kansai(), won = L.expenseTotals(t.expenses, t.rates, t.home).total;
+  assert.deepEqual(L.equivalents(won, t.rates).map((e) => e.text), ['$624.92', '¥94,937', '€585.02']);
+  assert.equal(L.fromHome(won, 'USD', t.rates), 624.92);
+  assert.equal(L.money(won, 'KRW', t.rates), '₩865,825');
+  assert.equal(L.money(-1500, 'KRW', {}), '-₩1,500');
+  assert.equal(L.money(1000, 'THB', { THB: 40 }), '25.00 THB');
+});
+test('환율이 없는 표시 통화는 null · 빈 글자(지어내지 않는다)', () => {
+  assert.equal(L.fromHome(10000, 'EUR', { USD: 1385.5 }), null);
+  assert.equal(L.money(10000, 'EUR', {}), '');
+  assert.deepEqual(L.equivalents(10000, { USD: 1000 }).map((e) => e.value), [10, null, null]);
+});
+
+console.log('정산 (낸 사람 · 나눌 사람 · 최소 송금)');
+test('원 단위로 나누기: 나머지는 앞사람부터 1원씩, 합은 정확히 같다', () => {
+  assert.deepEqual(L.splitWon(10000, ['a', 'b', 'c']), { a: 3334, b: 3333, c: 3333 });
+  assert.deepEqual(L.splitWon(10001, ['a', 'b', 'c']), { a: 3334, b: 3334, c: 3333 });
+  assert.deepEqual(L.splitWon(-5, ['a', 'b']), { a: -3, b: -2 });
+  for (let n = 1; n <= 7; n++) for (const v of [1, 99, 17319, 865825]) {
+    const ids = Array.from({ length: n }, (_, i) => 'p' + i);
+    assert.equal(Object.values(L.splitWon(v, ids)).reduce((a, b) => a + b, 0), v);
+  }
+});
+test('다낭 예시(세 사람): 사람별 낸 돈·부담·차액과 송금 2번', () => {
+  const st = L.settle(S.past()[0]);
+  assert.deepEqual(st.paid, { 'm-me': 42350, 'm-a': 66000, 'm-b': 1500000 });
+  assert.deepEqual(st.owed, { 'm-me': 539050, 'm-a': 539050, 'm-b': 530250 });
+  assert.deepEqual(st.net, { 'm-me': -496700, 'm-a': -473050, 'm-b': 969750 });
+  assert.deepEqual(st.transfers, [{ from: 'm-me', to: 'm-b', won: 496700 }, { from: 'm-a', to: 'm-b', won: 473050 }]);
+  assert.equal(st.total, 1608350);
+  const cafe = st.items.find((i) => i.id === 'sx-24');
+  assert.deepEqual(cafe.sharers, ['m-me', 'm-a'], '둘이서 나눈 카페');
+  for (const it of st.items) assert.equal(Object.values(it.shares).reduce((a, b) => a + b, 0), it.won, it.id);
+});
+test('혼자 간 여행은 「나」 한 사람 — 주고받을 돈 없음, 환율 없는 지출은 정산에서 빠진다', () => {
+  const st = L.settle(S.kansai());
+  assert.equal(st.members.length, 1); assert.deepEqual(st.transfers, []);
+  assert.equal(st.net['m-me'], 0); assert.equal(st.total, 865825);
+  const t = S.past()[0]; delete t.rates.VND;
+  const st2 = L.settle(t);
+  assert.deepEqual(st2.excluded, ['sx-21', 'sx-22', 'sx-24']); assert.equal(st2.total, 1500000);
+});
+test('없는 사람이 낸 사람·나눌 사람으로 남아 있으면 첫 사람 · 모두로 되돌린다', () => {
+  const ms = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+  assert.equal(L.payerOf({ paidBy: 'z' }, ms), 'a');
+  assert.deepEqual(L.sharersOf({ split: ['z'] }, ms), ['a', 'b']);
+  assert.deepEqual(L.sharersOf({ split: ['b', 'z'] }, ms), ['b']);
+});
+test('최소 송금: 앞에서부터 이어 주는 방법이면 4번인 경우를 3번에 끝낸다', () => {
+  const net = { p0: 3000, p1: -2000, p2: 0, p3: -2000, p4: -3000, p5: 4000 };
+  const tr = L.minTransfers(net);
+  assert.equal(tr.length, 3);
+  const bal = { ...net }; tr.forEach((x) => { bal[x.from] += x.won; bal[x.to] -= x.won; assert.ok(x.won > 0); });
+  assert.ok(Object.values(bal).every((v) => v === 0));
+  assert.equal(L.minTransfers({ a: 1, b: 1 }), null, '합이 0 이 아니면 null');
+});
+// 따로 만든 완전 탐색(백트래킹)으로 최소 횟수를 구해 대조한다
+function bruteMin(vals) {
+  const v = vals.filter((x) => x);
+  function go(i) {
+    while (i < v.length && v[i] === 0) i++;
+    if (i === v.length) return 0;
+    let best = Infinity;
+    for (let j = i + 1; j < v.length; j++) if (v[i] * v[j] < 0) { v[j] += v[i]; best = Math.min(best, 1 + go(i + 1)); v[j] -= v[i]; }
+    return best;
+  }
+  return go(0);
+}
+test('최소 송금: 무작위 300가지(2~7명)에서 완전 탐색과 횟수가 같고 모두 0 으로 끝난다', () => {
+  let seed = 11; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (let k = 0; k < 300; k++) {
+    const n = 2 + Math.floor(rnd() * 6), v = [];
+    for (let i = 0; i < n - 1; i++) v.push((Math.floor(rnd() * 11) - 5) * 1000);
+    v.push(-v.reduce((a, b) => a + b, 0));
+    const net = {}; v.forEach((x, i) => { net['p' + i] = x; });
+    const tr = L.minTransfers(net), bal = { ...net };
+    tr.forEach((x) => { bal[x.from] += x.won; bal[x.to] -= x.won; });
+    assert.ok(Object.values(bal).every((x) => x === 0), JSON.stringify(net));
+    assert.equal(tr.length, bruteMin(v), JSON.stringify(net));
+  }
+});
+
+console.log('외부 지도 API (선택 — 요청 주소 만들기 · 답 읽기, 실제 호출은 하지 않음)');
+test('요청 주소: Google 은 key·language=ko, 카카오는 x=경도·y=위도 + KakaoAK 머리글', () => {
+  const g = L.geoRequest('google', 34.6687, 135.5013, 'AIzaTEST');
+  assert.ok(g.url.startsWith('https://maps.googleapis.com/maps/api/geocode/json?latlng=34.668700,135.501300&language=ko&key=AIzaTEST'));
+  const k = L.geoRequest('kakao', 37.5663, 126.9779, 'abc');
+  assert.equal(k.url, 'https://dapi.kakao.com/v2/local/geo/coord2address.json?x=126.977900&y=37.566300');
+  assert.equal(k.headers.Authorization, 'KakaoAK abc');
+  assert.equal(L.geoRequest('none', 1, 2, 'k'), null);
+});
+test('답 읽기: Google 명소 이름 우선 · 없으면 도시+동네, 카카오 건물 이름 · 없으면 구+동, 오류는 error', () => {
+  const g = {
+    status: 'OK', results: [
+      { formatted_address: '일본 〒542-0071 오사카부 오사카시 주오구 도톤보리 1', types: ['street_address'],
+        address_components: [{ long_name: '1', types: ['premise_number'] }, { long_name: '도톤보리', types: ['sublocality_level_2', 'sublocality', 'political'] },
+          { long_name: '주오구', types: ['sublocality_level_1', 'sublocality', 'political'] }, { long_name: '오사카시', types: ['locality', 'political'] }] },
+      { formatted_address: '도톤보리 글리코 간판', types: ['tourist_attraction', 'point_of_interest', 'establishment'],
+        address_components: [{ long_name: '글리코 간판', types: ['point_of_interest', 'establishment'] }] }]
+  };
+  assert.deepEqual(L.geoParse('google', g), { name: '글리코 간판', detail: '일본 〒542-0071 오사카부 오사카시 주오구 도톤보리 1' });
+  g.results.pop();
+  assert.equal(L.geoParse('google', g).name, '오사카시 주오구');
+  assert.deepEqual(L.geoParse('google', { status: 'ZERO_RESULTS', results: [] }), { name: '', detail: '' });
+  assert.ok(L.geoParse('google', { status: 'REQUEST_DENIED', error_message: 'The provided API key is invalid.' }).error.includes('REQUEST_DENIED'));
+  const k = { documents: [{ road_address: { address_name: '서울 중구 세종대로 110', building_name: '서울특별시청' }, address: { region_2depth_name: '중구', region_3depth_name: '태평로1가' } }] };
+  assert.equal(L.geoParse('kakao', k).name, '서울특별시청');
+  k.documents[0].road_address = null;
+  assert.equal(L.geoParse('kakao', k).name, '중구 태평로1가');
+  assert.ok(L.geoParse('kakao', { errorType: 'AccessDeniedError', message: 'wrong appKey' }).error.includes('wrong appKey'));
+  assert.ok(L.geoParse('google', null).error);
+});
+
+console.log('백업 (2026-09-30 칸)');
+test('함께 간 사람·낸 사람·나눌 사람이 든 백업은 통과, 형식이 틀리면 알려 준다', () => {
+  const db = { schemaVersion: 1, trips: [S.kansai(), ...S.past()] };
+  assert.deepEqual(L.checkDb(db), []);
+  const bad = L.clone(db); bad.trips[1].members = [{ id: 'm-me', name: ' ' }];
+  assert.ok(L.checkDb(bad).some((m) => m.includes('members')));
+  const bad2 = L.clone(db); bad2.trips[1].expenses[0].split = 'm-me';
+  assert.ok(L.checkDb(bad2).some((m) => m.includes('나눌 사람')));
+  const old = L.clone(db); old.trips.forEach((t) => { delete t.members; });   // 예전 백업(칸 없음)도 받는다
+  assert.deepEqual(L.checkDb(old), []);
 });
 
 console.log(`\n${passed}개 통과${process.exitCode ? ' — 실패 있음' : ''}`);

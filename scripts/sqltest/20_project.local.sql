@@ -199,6 +199,25 @@ begin
   perform public._assert_raises($s$insert into public.expense (trip_id, expense_id, spent_on, amount, currency) values ('t-none', 'x-2', '2026-04-03', 100, 'JPY')$s$,
     '23503', '없는 여행에는 지출을 붙일 수 없다');
 
+  -- 2026-09-30 정산·장소 이름 칸
+  update public.trip set members = '[{"id":"m-me","name":"나"},{"id":"m-a","name":"친구A"}]' where trip_id = 't-kansai';
+  insert into public.expense (trip_id, expense_id, spent_on, amount, currency, paid_by, split_among)
+  values ('t-kansai', 'x-s1', '2026-04-04', 3000, 'JPY', 'm-a', '{m-me,m-a}');
+  perform public._assert_eq((select split_among from public.expense where expense_id = 'x-s1'), '{m-me,m-a}'::text[], '나눌 사람 목록을 저장한다');
+  perform public._assert_eq((select split_among from public.expense where expense_id = 'x-1'), '{}'::text[], '나눌 사람을 안 적으면 빈 목록(= 모두)');
+  perform public._assert_eq((select jsonb_array_length(members) from public.trip where trip_id = 't-kansai'), 2, '함께 간 사람 2명');
+  update public.photo set place = '도톤보리', place_detail = '오사카시 주오구' where photo_id = 'p-1';
+  perform public._assert_eq((select place from public.photo where photo_id = 'p-1'), '도톤보리'::text, '장소 이름을 저장한다');
+  delete from public.expense where expense_id = 'x-s1';
+  perform public._assert_raises($s$update public.trip set members = '{"id":"m-me"}' where trip_id = 't-kansai'$s$,
+    '23514', '함께 간 사람은 배열만 받는다');
+  perform public._assert_raises($s$update public.expense set split_among = (select array_agg('m' || g) from generate_series(1, 21) g) where expense_id = 'x-1'$s$,
+    '23514', '나눌 사람은 20명까지');
+  perform public._assert_raises($s$update public.expense set paid_by = '' where expense_id = 'x-1'$s$,
+    '23514', '낸 사람 id 는 빈 글자가 아니어야 한다');
+  perform public._assert_raises($s$update public.photo set place = repeat('가', 61) where photo_id = 'p-1'$s$,
+    '23514', '장소 이름은 60자까지');
+
   perform public._assert_raises($s$insert into public.photo (trip_id, photo_id, file_name, lat) values ('t-kansai', 'p-2', 'a.jpg', 34.6)$s$,
     '23514', '위도만 있고 경도가 없으면 막는다');
   perform public._assert_raises($s$insert into public.photo (trip_id, photo_id, file_name, taken_at, lat, lng) values ('t-kansai', 'p-2', 'a.jpg', '2026-04-03 10:00', 91, 135)$s$,

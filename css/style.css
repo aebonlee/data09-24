@@ -207,6 +207,63 @@ th, td { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 td.num, th.num { text-align: right; white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 .x-row td .btn { margin: 0 0 2px 4px; }
+.missing { color: var(--neg); font-weight: 700; }
+
+/* 2026-09-30 — 머리 줄 · 보기 전환 */
+.panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 8px; }
+.panel-head h2 { margin: 0; }
+.panel-head select { width: auto; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg-btn { border: 0; background: var(--surface); padding: 5px 12px; font-size: .86rem; font-weight: 600; cursor: pointer; color: var(--muted); }
+.seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+.seg-btn[aria-pressed=true] { background: var(--primary); color: var(--on-primary); }
+
+/* 사진 중심 앨범 */
+.g-day { margin-bottom: 18px; }
+.g-day h3 { margin: 0 0 4px; }
+.g-places { font-weight: 500; color: var(--muted); font-size: .9rem; }
+.g-title { color: var(--primary); font-weight: 600; margin: 0 0 6px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.g-item { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: #dfe7e8; aspect-ratio: 4 / 3; cursor: zoom-in; }
+.g-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.g-item .noimg { display: flex; align-items: center; justify-content: center; height: 100%; font-size: .8rem; color: var(--muted); padding: 6px; }
+.g-cap { position: absolute; left: 0; right: 0; bottom: 0; text-align: left; font-size: .76rem; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .65)); padding: 14px 6px 4px; }
+.lightbox { position: fixed; inset: 0; z-index: 70; background: rgba(10, 18, 20, .88); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.lb-inner { width: 100%; max-width: 960px; display: flex; flex-direction: column; gap: 10px; max-height: 100%; }
+.lb-inner img { width: 100%; max-height: calc(100vh - 140px); object-fit: contain; border-radius: 8px; background: #000; }
+.lb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lb-cap { flex: 1 1 200px; color: #fff; margin: 0; font-size: .9rem; }
+
+/* 지도 따라가기 */
+.stepper { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+
+/* 경비 한눈에(미니멀 대시보드) */
+.dash-panel { margin-bottom: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 720px) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.tile { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.tile b { display: block; font-size: 1.3rem; color: var(--primary); overflow-wrap: anywhere; }
+.tile span { font-size: .82rem; color: var(--muted); }
+.eq { margin: 10px 0 6px; font-weight: 600; }
+.eq > span { white-space: nowrap; margin-left: 6px; color: var(--muted); font-weight: 500; }
+.stack { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--surface-2); }
+.stack i { display: block; height: 100%; }
+.stack-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .84rem; color: var(--muted); margin: 6px 0 0; }
+
+/* 정산 */
+.who { border-top: 1px dashed var(--line); padding-top: 8px; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.checks label.check { margin: 0; }
+.transfers { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px; }
+.transfers li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; }
+.transfers .amt { margin-left: auto; font-weight: 800; color: var(--primary); }
+td.pos { color: var(--ok); font-weight: 700; }
+td.neg { color: var(--neg); font-weight: 700; }
+.st-item { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.st-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; }
+.st-row { margin-top: 6px; }
+.st-row select { width: auto; }
+.st-row .check .small { margin-left: 2px; }
 
 /* 요약 카드 */
 .card-canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; display: block; margin: 8px 0; background: #fff; }
@@ -221,7 +278,7 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .print-view { display: none; }
 @media print {
   body { background: #fff; font-size: 11pt; }
-  .site-header, .main, .site-footer, .toast, .skip { display: none !important; }
+  .site-header, .main, .site-footer, .toast, .skip, .lightbox { display: none !important; }
   .print-view { display: block; color: #000; }
   .print-view h1 { font-size: 20pt; margin: 0 0 4pt; }
   .print-view h2 { font-size: 14pt; margin: 14pt 0 6pt; border-bottom: 1px solid #999; padding-bottom: 2pt; }

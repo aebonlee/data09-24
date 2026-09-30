@@ -4,10 +4,11 @@
  *  - 사진 미리보기(작게 줄인 JPEG)    : IndexedDB `data09-24` 의 thumbs (localStorage 는 5MB 안팎이라 사진을 담기 어렵다)
  *  - 원본 사진은 어디에도 올리거나 복사하지 않습니다. 이 브라우저 밖으로 나가지 않습니다.
  *  - OpenAI 키(선택)                 : localStorage `data09-24.openai` — 백업 파일에 넣지 않습니다
+ *  - 외부 지도 API 설정(선택, 기본 꺼짐): localStorage `data09-24.geo` { on, provider, key } — 백업 파일에 넣지 않습니다
  */
 (function (root) {
   'use strict';
-  var KEY = 'data09-24.db', KEY_AI = 'data09-24.openai', DB = 'data09-24', STORE = 'thumbs';
+  var KEY = 'data09-24.db', KEY_AI = 'data09-24.openai', KEY_GEO = 'data09-24.geo', DB = 'data09-24', STORE = 'thumbs';
 
   function load() {
     try { var s = root.localStorage.getItem(KEY); return s ? JSON.parse(s) : null; }
@@ -24,6 +25,14 @@
   function clear() { try { root.localStorage.removeItem(KEY); } catch (e) { /* 무시 */ } }
   function getKey() { try { return root.localStorage.getItem(KEY_AI) || ''; } catch (e) { return ''; } }
   function setKey(k) { try { if (k) root.localStorage.setItem(KEY_AI, k); else root.localStorage.removeItem(KEY_AI); return true; } catch (e) { return false; } }
+
+  function getGeo() {
+    try { var o = JSON.parse(root.localStorage.getItem(KEY_GEO) || 'null'); return o && typeof o === 'object' ? o : { on: false, provider: 'google', key: '' }; }
+    catch (e) { return { on: false, provider: 'google', key: '' }; }
+  }
+  function setGeo(o) {
+    try { if (o) root.localStorage.setItem(KEY_GEO, JSON.stringify(o)); else root.localStorage.removeItem(KEY_GEO); return true; } catch (e) { return false; }
+  }
 
   // ---------------------------------------------------------------- IndexedDB (사진 미리보기)
   var memory = {};          // IndexedDB 를 못 쓰는 브라우저 — 이번 창에서만 보관
@@ -71,6 +80,6 @@
   }
   function persistent() { return open().then(function (db) { return !!db; }); }
 
-  root.JStore = { load: load, save: save, clear: clear, getKey: getKey, setKey: setKey,
+  root.JStore = { load: load, save: save, clear: clear, getKey: getKey, setKey: setKey, getGeo: getGeo, setGeo: setGeo,
     putThumb: putThumb, getThumb: getThumb, delThumbs: delThumbs, persistent: persistent, KEY: KEY };
 })(window);

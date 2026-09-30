@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>JOURNAL · 여행 기록일지</title>
-  <meta name="description" content="사진의 날짜·위치(EXIF)로 여행을 날짜별로 정리하고, 동선 지도·방문 국가·경비·일기 도우미·요약 카드까지 한곳에 담는 여행 기록일지(1단계). 사진은 이 브라우저 밖으로 나가지 않습니다.">
+  <meta name="description" content="사진의 날짜·위치(EXIF, 아이폰 HEIC 포함)로 여행을 날짜별로 정리하고, 도시 이름·동선 지도·방문 국가·경비와 정산·일기 도우미·요약 카드까지 한곳에 담는 여행 기록일지. 사진은 이 브라우저 밖으로 나가지 않습니다.">
   <meta name="robots" content="noindex">
   <meta name="theme-color" content="#1f5f6b">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f5f6b'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3EJ%3C/text%3E%3C/svg%3E">
@@ -31,6 +31,7 @@
       <button type="button" role="tab" data-tab="log">기록·사진</button>
       <button type="button" role="tab" data-tab="map">동선 지도</button>
       <button type="button" role="tab" data-tab="money">경비</button>
+      <button type="button" role="tab" data-tab="settle">정산</button>
       <button type="button" role="tab" data-tab="export">요약·내보내기</button>
     </nav>
   </header>
@@ -109,14 +110,14 @@
         <div class="col">
           <div class="panel">
             <h2 id="hLog">사진 불러오기</h2>
-            <p class="hint">JPEG 사진을 여러 장 골라 주세요. 찍은 날짜와 위치(EXIF)를 읽어 날짜별로 묶어요. <strong>사진 원본은 올리거나 복사하지 않고</strong>, 작은 미리보기만 이 브라우저에 저장합니다.</p>
-            <label class="file-btn btn primary">사진 고르기<input type="file" id="photoInput" accept="image/jpeg,image/*" multiple></label>
+            <p class="hint">사진을 여러 장 골라 주세요(JPEG·아이폰 HEIC). 찍은 날짜와 위치(EXIF)를 읽어 날짜별로 묶고, 가까운 도시 이름을 붙여요. <strong>사진 원본은 올리거나 복사하지 않고</strong>, 작은 미리보기만 이 브라우저에 저장합니다.</p>
+            <label class="file-btn btn primary">사진 고르기<input type="file" id="photoInput" accept="image/*,.heic,.heif" multiple></label>
             <div id="importResult" class="note" hidden></div>
             <div class="actions">
               <button type="button" class="btn" id="btnMakeEntries">사진으로 날짜별 기록 만들기</button>
               <button type="button" class="btn ghost" id="btnNewEntry">기록 직접 쓰기</button>
             </div>
-            <p class="hint">아이폰 사진(HEIC)은 날짜·위치를 읽지 못해요. 사진 앱에서 「JPEG 로 내보내기」 하거나 설정 → 카메라 → 포맷 → 「높은 호환성」으로 찍은 사진을 써 주세요.</p>
+            <p class="hint">아이폰 사진(HEIC)도 그대로 넣을 수 있어요. 날짜·위치는 바로 읽고, 미리보기는 사파리에서는 바로, 크롬·엣지에서는 변환기(약 1.3MB)를 처음 한 번 불러와 만들어요. 아이폰에서 고를 때 위치가 빠지면 사진 고르기 화면 위쪽 「옵션」에서 「위치」를 켜 주세요.</p>
           </div>
 
           <div class="panel" id="entryPanel" hidden>
@@ -160,8 +161,15 @@
         </div>
         <div class="col">
           <div class="panel">
-            <h2>날짜별 기록과 앨범</h2>
+            <div class="panel-head">
+              <h2>날짜별 기록과 앨범</h2>
+              <div class="seg" role="group" aria-label="보기 방식">
+                <button type="button" class="seg-btn" data-logview="diary" aria-pressed="true">기록 보기</button>
+                <button type="button" class="seg-btn" data-logview="album" aria-pressed="false">사진 크게 보기</button>
+              </div>
+            </div>
             <div id="dayList"></div>
+            <div id="gallery" class="gallery-wrap" hidden></div>
           </div>
         </div>
       </div>
@@ -177,8 +185,17 @@
         </div>
         <div class="map-box trip-map" id="tripMap"></div>
         <div id="mLegend" class="legend"></div>
+        <div class="stepper">
+          <button type="button" class="btn small" id="mPrev">이전 장소</button>
+          <span id="mStep" class="small" aria-live="polite"></span>
+          <button type="button" class="btn small" id="mNext">다음 장소</button>
+        </div>
         <div id="pinInfo" class="pin-info" aria-live="polite"></div>
-        <p class="hint">핀을 누르면 그곳의 사진과 기록을 보여 드려요. 선은 같은 날 사진을 찍은 순서대로 이은 직선이며, 실제 이동 경로(도로)와는 다를 수 있어요. 지도는 간략한 세계 지도(1:110m)라 해안선이 거칠게 보입니다.</p>
+        <div class="actions" id="geoActs" hidden>
+          <button type="button" class="btn small" id="btnGeoFetch">외부 지도 API 로 장소 이름 받기</button>
+          <span class="small" id="geoMsg" role="status" aria-live="polite"></span>
+        </div>
+        <p class="hint">핀을 누르거나 「이전·다음 장소」로 여행을 따라가 보세요. 장소 이름은 가까운 도시 이름(GeoNames, 인터넷 없이)이고, 설정에서 외부 지도 API 를 켜면 더 자세한 이름을 받을 수 있어요. 선은 같은 날 사진을 찍은 순서대로 이은 직선이라 실제 이동 경로(도로)와는 다를 수 있어요. 지도는 간략한 세계 지도(1:110m)라 해안선이 거칠게 보입니다.</p>
       </div>
       <div class="panel">
         <h2>날짜별 동선</h2>
@@ -188,6 +205,13 @@
 
     <!-- 4. 경비 -->
     <section id="tab-money" class="tab" role="tabpanel" aria-labelledby="hMoney" hidden>
+      <div class="panel dash-panel">
+        <div class="panel-head">
+          <h2>경비 한눈에</h2>
+          <label class="inline-label">보기 통화<select id="viewCur" class="view-cur"></select></label>
+        </div>
+        <div id="xDash" class="dash"></div>
+      </div>
       <div class="layout">
         <div class="col">
           <div class="panel">
@@ -202,6 +226,10 @@
                 <label>통화<select id="xCur"></select></label>
               </div>
               <label>메모<input id="xMemo" type="text" maxlength="80" placeholder="예: 점심, 교통카드 충전"></label>
+              <div id="xWho" class="who" hidden>
+                <label>낸 사람<select id="xPaidBy"></select></label>
+                <div class="field"><span class="field-label" id="lblSplit">나눌 사람</span><div class="checks" id="xSplit" role="group" aria-labelledby="lblSplit"></div></div>
+              </div>
               <p class="hint" id="xPreview"></p>
               <div class="actions">
                 <button type="submit" class="btn primary" id="xSubmit">추가</button>
@@ -211,7 +239,7 @@
           </div>
           <div class="panel">
             <h2>환율 <span class="tag">직접 입력</span></h2>
-            <p class="hint">실시간 환율을 가져오지 않아요. 환전 영수증이나 카드 명세서의 환율을 적어 주세요. 원(KRW)으로 환산해 합계를 냅니다.</p>
+            <p class="hint">실시간 환율을 가져오지 않아요. 환전 영수증이나 카드 명세서의 환율을 적어 주세요. 기준 통화는 원(KRW)이고, USD·JPY·EUR 환율을 적으면 합계와 정산을 그 통화로도 보여 드려요.</p>
             <div id="rateList"></div>
           </div>
         </div>
@@ -228,7 +256,41 @@
       </div>
     </section>
 
-    <!-- 5. 요약·내보내기 -->
+    <!-- 5. 정산 -->
+    <section id="tab-settle" class="tab" role="tabpanel" aria-labelledby="hSettle" hidden>
+      <div class="layout">
+        <div class="col">
+          <div class="panel">
+            <h2 id="hSettle">함께 간 사람</h2>
+            <p class="hint">나눠 낸 여행이면 함께 간 사람을 더해 주세요. 지출마다 낸 사람과 나눌 사람을 고르면, 누가 누구에게 얼마를 보내면 되는지 계산해 드려요.</p>
+            <div class="inline">
+              <label class="sr" for="sName">이름</label>
+              <input id="sName" type="text" maxlength="20" placeholder="예: 친구A">
+              <button type="button" class="btn small" id="btnMemberAdd">더하기</button>
+            </div>
+            <div class="chips" id="sMembers"></div>
+            <p class="hint">처음 더한 사람이 지출의 기본 「낸 사람」이에요. 이름은 가명이나 별명으로 적어도 돼요.</p>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>누가 누구에게</h2>
+              <label class="inline-label">보기 통화<select id="sViewCur" class="view-cur"></select></label>
+            </div>
+            <div id="sTransfers"></div>
+            <div id="sPeople"></div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="panel">
+            <h2>내역별 정산</h2>
+            <p class="hint">지출마다 낸 사람과 나눌 사람을 바로 고칠 수 있어요. 금액은 원 단위로 나누고, 나누어떨어지지 않는 1원은 앞사람부터 더해요.</p>
+            <div id="sItems"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 요약·내보내기 -->
     <section id="tab-export" class="tab" role="tabpanel" aria-labelledby="hExport" hidden>
       <div class="layout">
         <div class="col">
@@ -273,6 +335,18 @@
               </div>
               <p class="small" id="keyMsg" role="status"></p>
             </details>
+            <details class="helper" id="geoBox">
+              <summary>장소 이름 — 외부 지도 API (선택, 기본 꺼짐)</summary>
+              <p class="hint">꺼 두면 인터넷 없이 가까운 도시 이름(GeoNames)만 붙여요. 켜면 「동선 지도」에서 단추를 누를 때 장소마다 <strong>좌표(위도·경도)만</strong> 고른 지도 회사로 보내 동네·명소 이름을 받아 와요. 사진은 보내지 않아요. 키는 본인 것을 쓰고(요금은 키 주인 부담), 이 브라우저에만 저장되며 백업 파일에도 들어가지 않아요.</p>
+              <label class="check"><input type="checkbox" id="geoOn"> 외부 지도 API 쓰기</label>
+              <label>지도 API<select id="geoProvider"></select></label>
+              <label>API 키<input id="geoKey" type="password" autocomplete="off" placeholder="AIza... 또는 카카오 REST API 키"></label>
+              <div class="actions">
+                <button type="button" class="btn" id="btnGeoSave">설정 저장</button>
+                <button type="button" class="btn ghost" id="btnGeoDel">키 지우기</button>
+              </div>
+              <p class="small" id="geoSetMsg" role="status"></p>
+            </details>
             <div class="actions">
               <button type="button" class="btn ghost danger" id="btnReset">모든 여행 지우기</button>
             </div>
@@ -282,16 +356,30 @@
     </section>
   </main>
 
+  <!-- 사진 크게 보기 -->
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-labelledby="lbCap" hidden>
+    <div class="lb-inner">
+      <img id="lbImg" alt="">
+      <div class="lb-bar">
+        <button type="button" class="btn small" id="lbPrev">이전</button>
+        <p id="lbCap" class="lb-cap"></p>
+        <button type="button" class="btn small" id="lbNext">다음</button>
+        <button type="button" class="btn small" id="lbClose">닫기</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 인쇄용 여행기 (화면에는 보이지 않음) -->
   <div id="printView" class="print-view" aria-hidden="true"></div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toastMsg"></span><button type="button" class="btn small" id="toastAct" hidden>되돌리기</button></div>
 
   <footer class="site-footer inner">
-    <p>JOURNAL · data09-24 · 현장 데이터 수집·디지털화 전문가과정 1차수 수강생 프로젝트(1단계). 지도: Made with Natural Earth.</p>
+    <p>JOURNAL · data09-24 · 현장 데이터 수집·디지털화 전문가과정 1차수 수강생 프로젝트. 지도: Made with Natural Earth. 도시 이름: GeoNames (geonames.org), CC BY 4.0.</p>
   </footer>
 
   <script src="vendor/world-110m.js"></script>
+  <script src="vendor/cities15000.js" id="citiesScript" async></script>
   <script src="js/exif.js"></script>
   <script src="js/logic.js"></script>
   <script src="js/store.js"></script>
